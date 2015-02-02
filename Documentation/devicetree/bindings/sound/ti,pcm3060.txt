@@ -1,0 +1,38 @@
+Texas Instruments pcm3060 DT bindings
+
+This driver supports both SPI and I2C bus access for this codec
+
+Required properties:
+
+  - compatible: "ti,pcm3060"
+
+  - clocks : Contains an entry for each entry in clock-names
+
+  - clock-names : Includes the following entries:
+	"sckid"	The DAC system clock
+	"sckia"	The ADC system clock
+
+  - VDD-supply : Digital power supply regulator (+3.3V)
+
+  - VCC-supply : Analogue power supply regulator (+5V)
+
+For required properties on SPI/I2C, consult SPI/I2C device tree documentation
+
+Examples:
+
+i2c0: i2c0@0 {
+
+	...
+
+	pcm3060: audio-codec@46 {
+		compatible = "ti,pcm3060";
+		reg = <0x46>;
+		clocks = <&clk_core CLK_I2S>,
+			 <&clk_core CLK_I2S>;
+		clock-names = "sckid", "sckia";
+		VCC-supply = <&supply5v0>;
+		VDD-supply = <&supply3v3>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2s_mclk_pin>;
+	};
+};

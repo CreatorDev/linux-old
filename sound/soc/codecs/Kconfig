@@ -85,6 +85,10 @@ config SND_SOC_ALL_CODECS
 	select SND_SOC_PCM1681 if I2C
 	select SND_SOC_PCM1792A if SPI_MASTER
 	select SND_SOC_PCM3008
+	select SND_SOC_PCM3060_I2C if I2C
+	select SND_SOC_PCM3060_SPI if SPI_MASTER
+	select SND_SOC_PCM3168A_I2C if I2C
+	select SND_SOC_PCM3168A_SPI if SPI_MASTER
 	select SND_SOC_PCM512x_I2C if I2C
 	select SND_SOC_PCM512x_SPI if SPI_MASTER
 	select SND_SOC_RT286 if I2C
@@ -505,6 +509,28 @@ config SND_SOC_PCM1792A
 
 config SND_SOC_PCM3008
        tristate
+
+config SND_SOC_PCM3060
+	tristate
+
+config SND_SOC_PCM3060_SPI
+	tristate
+	select SND_SOC_PCM3060
+
+config SND_SOC_PCM3060_I2C
+	tristate
+	select SND_SOC_PCM3060
+
+config SND_SOC_PCM3168A
+	tristate
+
+config SND_SOC_PCM3168A_SPI
+	tristate
+	select SND_SOC_PCM3168A
+
+config SND_SOC_PCM3168A_I2C
+	tristate
+	select SND_SOC_PCM3168A
 
 config SND_SOC_PCM512x
 	tristate
