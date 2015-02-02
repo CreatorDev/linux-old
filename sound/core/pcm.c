@@ -489,7 +489,8 @@ static void snd_pcm_xrun_injection_write(struct snd_info_entry *entry,
 
 	snd_pcm_stream_lock_irq(substream);
 	runtime = substream->runtime;
-	if (runtime && runtime->status->state == SNDRV_PCM_STATE_RUNNING)
+	if (runtime && (runtime->status->state == SNDRV_PCM_STATE_RUNNING ||
+			runtime->status->state == SNDRV_PCM_STATE_STARTING))
 		snd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);
 	snd_pcm_stream_unlock_irq(substream);
 }
@@ -746,6 +747,7 @@ int snd_pcm_new_stream(struct snd_pcm *pcm, int stream, int substream_count)
 		INIT_LIST_HEAD(&substream->self_group.substreams);
 		list_add_tail(&substream->link_list, &substream->self_group.substreams);
 		atomic_set(&substream->mmap_count, 0);
+		init_waitqueue_head(&substream->start_at_wait);
 		prev = substream;
 	}
 	return 0;

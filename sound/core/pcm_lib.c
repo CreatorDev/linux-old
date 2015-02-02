@@ -2025,6 +2025,7 @@ static snd_pcm_sframes_t snd_pcm_lib_write1(struct snd_pcm_substream *substream,
 	snd_pcm_stream_lock_irq(substream);
 	switch (runtime->status->state) {
 	case SNDRV_PCM_STATE_PREPARED:
+	case SNDRV_PCM_STATE_STARTING:
 	case SNDRV_PCM_STATE_RUNNING:
 	case SNDRV_PCM_STATE_PAUSED:
 		break;
@@ -2251,6 +2252,7 @@ static snd_pcm_sframes_t snd_pcm_lib_read1(struct snd_pcm_substream *substream,
 		break;
 	case SNDRV_PCM_STATE_DRAINING:
 	case SNDRV_PCM_STATE_RUNNING:
+	case SNDRV_PCM_STATE_STARTING:
 	case SNDRV_PCM_STATE_PAUSED:
 		break;
 	case SNDRV_PCM_STATE_XRUN:

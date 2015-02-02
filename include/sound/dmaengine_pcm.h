@@ -35,6 +35,7 @@ snd_pcm_substream_to_dma_direction(const struct snd_pcm_substream *substream)
 
 int snd_hwparams_to_dma_slave_config(const struct snd_pcm_substream *substream,
 	const struct snd_pcm_hw_params *params, struct dma_slave_config *slave_config);
+int dmaengine_pcm_prepare_and_submit(struct snd_pcm_substream *substream);
 int snd_dmaengine_pcm_trigger(struct snd_pcm_substream *substream, int cmd);
 snd_pcm_uframes_t snd_dmaengine_pcm_pointer(struct snd_pcm_substream *substream);
 snd_pcm_uframes_t snd_dmaengine_pcm_pointer_no_residue(struct snd_pcm_substream *substream);
@@ -99,6 +100,11 @@ void snd_dmaengine_pcm_set_config_from_dai_data(
  * The PCM streams have custom channel names specified.
  */
 #define SND_DMAENGINE_PCM_FLAG_CUSTOM_CHANNEL_NAME BIT(4)
+/*
+ * DMA needs to be started early when start_at is used (eg to allow pre-loading
+ * of internal fifos before assertion of an enable signal)
+ */
+#define SND_DMAENGINE_PCM_FLAG_EARLY_START BIT(5)
 
 /**
  * struct snd_dmaengine_pcm_config - Configuration data for dmaengine based PCM
