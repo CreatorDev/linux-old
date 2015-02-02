@@ -1,0 +1,51 @@
+Imagination Technologies Pistachio Event Timer
+
+Required properties:
+
+  - compatible : Compatible list, must contain "img,pistachio-event-timer"
+
+  - reg : Offset and length of the register set for the device
+
+  - interrupts : Must contain an entry for each of the three interrupts below.
+		 Order must also match the below:
+
+		 Internal interrupt 1
+		 Internal interrupt 2
+		 Internal interrupt 3
+		 Event trigger 0
+		 Event trigger 1
+
+  - #clock-cells : Must be 0
+
+  - clocks : Must contain an entry for each entry in clock-names
+	See ../clock/clock-bindings.txt for details
+
+  - clock-names : Must include the following entries:
+	"sys"	The system clock
+	"ref0"	Reference clock 0
+	"ref1"	Reference clock 1
+
+  - img,clk-select : Reference select
+
+Optional properties:
+
+  - img,clk-rate : Internal clock rate
+
+Example:
+
+event_timer: event_timer@18102300 {
+	compatible = "img,pistachio-event-timer";
+	reg = <0x18102300 0x400>;
+	assigned-clocks = <&clk_core CLK_EVENT_TIMER_MUX>;
+	assigned-clock-parents = <&clk_core CLK_AUDIO_PLL_MUX>;
+	interrupts = <GIC_SHARED 53 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SHARED 54 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SHARED 55 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH>,
+		     <GIC_SHARED 57 IRQ_TYPE_LEVEL_HIGH>;
+	#clock-cells = <0>;
+	clocks = <&clk_core SYS_CLK_EVENT_TIMER &clk_core CLK_AUDIO &clk_core CLK_EVENT_TIMER>;
+	clock-names = "sys","ref0","ref1";
+	img,clk-select = <1>;
+	img,clk-rate = <12288000>;
+};

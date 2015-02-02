@@ -142,7 +142,7 @@ static void dmaengine_pcm_dma_complete(void *arg)
 	snd_pcm_period_elapsed(substream);
 }
 
-static int dmaengine_pcm_prepare_and_submit(struct snd_pcm_substream *substream)
+int dmaengine_pcm_prepare_and_submit(struct snd_pcm_substream *substream)
 {
 	struct dmaengine_pcm_runtime_data *prtd = substream_to_prtd(substream);
 	struct dma_chan *chan = prtd->dma_chan;
@@ -170,6 +170,7 @@ static int dmaengine_pcm_prepare_and_submit(struct snd_pcm_substream *substream)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(dmaengine_pcm_prepare_and_submit);
 
 /**
  * snd_dmaengine_pcm_trigger - dmaengine based PCM trigger implementation
