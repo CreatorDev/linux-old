@@ -83,7 +83,7 @@ void pistachio_clk_register_mux(struct pistachio_clk_provider *p,
 	for (i = 0; i < num; i++) {
 		clk = clk_register_mux(NULL, mux[i].name, mux[i].parents,
 				       mux[i].num_parents,
-				       CLK_SET_RATE_NO_REPARENT,
+				       mux[i].clk_flags,
 				       p->base + mux[i].reg, mux[i].shift,
 				       get_count_order(mux[i].num_parents),
 				       0, NULL);
@@ -100,7 +100,8 @@ void pistachio_clk_register_div(struct pistachio_clk_provider *p,
 
 	for (i = 0; i < num; i++) {
 		clk = clk_register_divider(NULL, div[i].name, div[i].parent,
-					   0, p->base + div[i].reg, 0,
+					   div[i].clk_flags,
+					   p->base + div[i].reg, 0,
 					   div[i].width, div[i].div_flags,
 					   NULL);
 		p->clk_data.clks[div[i].id] = clk;

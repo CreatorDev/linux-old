@@ -27,12 +27,12 @@
 
 /* Top level reg */
 #define CR_TIMER_CTRL_CFG		0x00
-#define TIMER_ME_GLOBAL			BIT(0)
+#define  TIMER_ME_GLOBAL		BIT(0)
 #define CR_TIMER_REV			0x10
 
 /* Timer specific registers */
 #define TIMER_CFG			0x20
-#define TIMER_ME_LOCAL			BIT(0)
+#define  TIMER_ME_LOCAL			BIT(0)
 #define TIMER_RELOAD_VALUE		0x24
 #define TIMER_CURRENT_VALUE		0x28
 #define TIMER_CURRENT_OVERFLOW_VALUE	0x2C
