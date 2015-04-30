@@ -1,0 +1,8 @@
+#ifndef __PISTACHIO_BUB_AUDIO_H
+#define __PISTACHIO_BUB_AUDIO_H
+
+#define PISTACHIO_MCLK_NONE		0
+#define PISTACHIO_MCLK_I2S		1
+#define PISTACHIO_MCLK_DAC		2
+
+#endif

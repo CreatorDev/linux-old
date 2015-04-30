@@ -241,6 +241,14 @@
 		#sound-dai-cells = <0>;
 	};
 
+	internal_dac: internal-dac {
+		compatible = "img,pistachio-internal-dac";
+		img,cr-top = <&cr_top>;
+		img,voltage-select = <1>;
+
+		#sound-dai-cells = <0>;
+	};
+
 	spfi0: spi@18100f00 {
 		compatible = "img,spfi";
 		reg = <0x18100f00 0x100>;
