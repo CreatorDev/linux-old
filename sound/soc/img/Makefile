@@ -5,3 +5,5 @@ obj-$(CONFIG_SND_SOC_IMG_SPDIF_IN) += img-spdif-in.o
 obj-$(CONFIG_SND_SOC_IMG_SPDIF_OUT) += img-spdif-out.o
 
 obj-$(CONFIG_SND_SOC_IMG_PISTACHIO_EVENT_TIMER) += pistachio-event-timer.o
+
+obj-$(CONFIG_SND_SOC_IMG_PISTACHIO_BUB) += pistachio-bub.o
