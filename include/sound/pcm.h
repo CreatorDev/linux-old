@@ -73,6 +73,9 @@ struct snd_pcm_ops {
 	int (*hw_free)(struct snd_pcm_substream *substream);
 	int (*prepare)(struct snd_pcm_substream *substream);
 	int (*trigger)(struct snd_pcm_substream *substream, int cmd);
+	int (*start_at)(struct snd_pcm_substream *substream,
+		int audio_clock_type, const struct timespec *ts);
+	int (*start_at_abort)(struct snd_pcm_substream *substream);
 	snd_pcm_uframes_t (*pointer)(struct snd_pcm_substream *substream);
 	int (*get_time_info)(struct snd_pcm_substream *substream,
 			struct timespec *system_ts, struct timespec *audio_ts,
@@ -431,6 +434,11 @@ struct snd_pcm_runtime {
 #ifdef CONFIG_SND_PCM_XRUN_DEBUG
 	struct snd_pcm_hwptr_log *hwptr_log;
 #endif
+
+	/* startat status info */
+	struct snd_pcm_startat_state startat_state;
+	/* data associated with current startat timer, otherwise NULL */
+	void *startat_data;
 };
 
 struct snd_pcm_group {		/* keep linked substreams */
@@ -573,6 +581,10 @@ int snd_pcm_info_user(struct snd_pcm_substream *substream,
 int snd_pcm_status(struct snd_pcm_substream *substream,
 		   struct snd_pcm_status *status);
 int snd_pcm_start(struct snd_pcm_substream *substream);
+int snd_pcm_pre_start(struct snd_pcm_substream *substream, int state);
+int snd_pcm_do_start(struct snd_pcm_substream *substream, int state);
+void snd_pcm_undo_start(struct snd_pcm_substream *substream, int state);
+void snd_pcm_post_start(struct snd_pcm_substream *substream, int state);
 int snd_pcm_stop(struct snd_pcm_substream *substream, snd_pcm_state_t status);
 int snd_pcm_drain_done(struct snd_pcm_substream *substream);
 int snd_pcm_stop_xrun(struct snd_pcm_substream *substream);

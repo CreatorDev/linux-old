@@ -489,7 +489,8 @@ static void snd_pcm_xrun_injection_write(struct snd_info_entry *entry,
 
 	snd_pcm_stream_lock_irq(substream);
 	runtime = substream->runtime;
-	if (runtime && runtime->status->state == SNDRV_PCM_STATE_RUNNING)
+	if (runtime && (runtime->status->state == SNDRV_PCM_STATE_RUNNING ||
+			runtime->status->state == SNDRV_PCM_STATE_STARTING))
 		snd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);
 	snd_pcm_stream_unlock_irq(substream);
 }

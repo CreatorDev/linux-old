@@ -243,6 +243,25 @@ static int snd_pcm_status_user_compat(struct snd_pcm_substream *substream,
 	return err;
 }
 
+struct snd_startat32 {
+	u32 clock_class;
+	u32 clock_type;
+	struct compat_timespec start_time;
+} __packed;
+
+static int snd_pcm_start_at_compat(struct snd_pcm_substream *substream,
+					struct snd_startat32 __user *_start_at)
+{
+	struct snd_startat start_at;
+
+	if (get_user(start_at.clock_class, &_start_at.clock_class) ||
+	    get_user(start_at.clock_type, &_start_at.clock_type) ||
+	    compat_get_timespec(&start_at.start_time, &_start_at.start_time))
+		return -EFAULT;
+
+	return snd_pcm_start_at(substream, &start_at);
+}
+
 /* both for HW_PARAMS and HW_REFINE */
 static int snd_pcm_ioctl_hw_params_compat(struct snd_pcm_substream *substream,
 					  int refine, 
@@ -482,6 +501,7 @@ enum {
 	SNDRV_PCM_IOCTL_WRITEN_FRAMES32 = _IOW('A', 0x52, struct snd_xfern32),
 	SNDRV_PCM_IOCTL_READN_FRAMES32 = _IOR('A', 0x53, struct snd_xfern32),
 	SNDRV_PCM_IOCTL_SYNC_PTR32 = _IOWR('A', 0x23, struct snd_pcm_sync_ptr32),
+	SNDRV_PCM_IOCTL_START_AT32 = _IOWR('A', 0x62, struct snd_startat32)
 
 };
 
@@ -554,6 +574,8 @@ static long snd_pcm_ioctl_compat(struct file *file, unsigned int cmd, unsigned l
 		return snd_pcm_ioctl_rewind_compat(substream, argp);
 	case SNDRV_PCM_IOCTL_FORWARD32:
 		return snd_pcm_ioctl_forward_compat(substream, argp);
+	case SNDRV_PCM_IOCTL_START_AT32:
+		return snd_pcm_start_at_compat(substream, argp);
 	}
 
 	return -ENOIOCTLCMD;
