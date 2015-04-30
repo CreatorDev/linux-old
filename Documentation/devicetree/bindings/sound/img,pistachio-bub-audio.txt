@@ -1,0 +1,265 @@
+Imagination Technologies Pistachio Bring-Up Board (BuB) Audio Card Driver
+
+
+
+Required properties:
+
+  - compatible : Compatible list, must contain "img,pistachio-bub-audio"
+
+  - clocks : Contains an entry for each entry in clock-names
+
+  - clock-names : Includes the following entries:
+        "audio_pll"  The audio PLL
+        "i2s_mclk"   The i2s reference clock
+                     Also connected to i2s_out_0_mclk output
+        "dac_clk"    Dac reference clock. Connected to i2s_dac_clk output
+        "evt_clk"    Event timer internal clock
+
+  - img,daughterboard : Contains daughterboard type. Valid identifiers
+                        (dt-bindings/sound/pistachio-bub-audio.h):
+
+        PISTACHIO_DAUGHTERBOARD_NONE       No daughterboard is connected, or
+                                           CN20 is not bridged
+        PISTACHIO_DAUGHTERBOARD_CODEC      The codec daughterboard is connected
+                                           and CN20 is bridged
+        PISTACHIO_DAUGHTERBOARD_BREAKOUT   The breakout daughterboard is
+                                           connected and CN20 is bridged
+
+  - img,mclk : Contains the mclk (master clock) source used by any codecs or
+               other external components.
+               Valid identifiers (dt-bindings/sound/pistachio-bub-audio.h):
+
+        PISTACHIO_MCLK_NONE      No mclk is required, or mclk is provided
+                                 externally with no software intervention
+                                 required to compenstate for differing sample
+                                 rates
+
+        PISTACHIO_MCLK_I2S       mclk is provided by the i2s_out_0_mclk output
+                                 from pistachio SoC. This clock is shared with
+                                 the internal i2s out controller
+
+        PISTACHIO_MCLK_DAC_CLK   mclk is provided by the i2s_dac_clk output
+                                 from pistachio SoC
+
+  - img,cr-periph : Must contain a phandle to the peripheral control syscon
+                    node which contains the i2s loopback control registers
+
+  - img,cr-top : Must contain a phandle to the top level control syscon
+                    node which contains the internal dac control registers
+
+  - img,event-timer : Must contain a reference to the event timer device node
+
+Optional properties:
+
+  - img,mclk-max : Contains a max constraint for the mclk rate. By default,
+                   the max rate is set to ULONG_MAX when the breakout board is
+                   used, else the max frequency supported by the pcm3060 and
+                   pcm3168a codecs (36.864Mhz)
+
+  - widgets : Please refer to widgets.txt
+
+  - routing : A list of the connections between audio components.
+              Each entry is a pair of strings, the first being the
+              connection's sink, the second being the connection's
+              source
+
+Optional subnodes:
+
+  - spdif_out : Contains spdif out information
+
+  - spdif_in : Contains spdif in information
+
+  - parallel_out : Contains parallel out information
+
+  - i2s_out : Contais i2s out information
+
+  - i2s_in : Contains i2s in information
+
+Required spdif_out subnode properties:
+
+  - cpu-dai : phandle of spdif out cpu dai
+
+Required spdif_in subnode properties:
+
+  - cpu-dai : phandle of spdif in cpu dai
+
+Required parallel_out subnode properties:
+
+  - cpu-dai : phandle of parallel out cpu dai
+
+Optional parallel_out subnode properties:
+
+  - tpa6130a2 : phandle of the tpa6130a2 codec. Can be omitted
+                if the codec is bypassed
+
+Required i2s_out subnode properties:
+
+  - cpu-dai : phandle of i2s out cpu dai
+
+  - cpu-format : i2s out cpu format. "i2s" and "left_j" are supported by
+                 the pistachio BuB iteration of the img i2s out controller
+
+Optional i2s_out subnode properties:
+
+  - cpu-bitclock-inversion : i2s out cpu BCLK inversion
+
+  - cpu-frame-inversion : i2s out cpu LRCLK inversion
+
+  - cpu-continuous-clock : i2s out BCLK and LRCLK always active
+
+  - pcm3060 : phandle to pcm3060 codec (DAC). This should be present if
+              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_NONE and
+              the main board switches are set to I2C or SPI control for the
+              pcm3060. Do not include this if hardware control is selected
+              for the pcm3060 codec. This codec is connected to i2s out
+              channel 0
+
+  - pcm3060-format : i2s format. "i2s", "left_j" and "right_j" are supported
+                     by the pcm3060
+
+  - pcm3060-bitclock-inversion : i2s BCLK inversion used by pcm3060
+
+  - pcm3060-frame-inversion : i2s LRCLK inversion used by pcm3060
+
+  - pcm3168a-1 : phandle to 1st pcm3168a codec (DAC). This should be present if
+              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_CODEC and
+              the codec daughterboard switches are set to I2C or SPI control
+              for the pcm3168a codecs. Do not include this if hardware control
+              is selected for the pcm3168a codecs. This codec is connected to
+              i2s out channels 0,1,2
+
+  - pcm3168a-1-format : i2s format. "i2s", "left_j", "right_j", "dsp_a" and
+                        "dsp_b" are supported by the pcm3168a
+
+  - pcm3168a-1-bitclock-inversion : i2s BCLK inversion used by pcm3168a-1
+
+  - pcm3168a-1-frame-inversion : i2s LRCLK inversion used by pcm3168a-1
+
+  - pcm3168a-2 : phandle to 2nd pcm3168a codec (DAC). This should be present if
+              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_CODEC and
+              the codec daughterboard switches are set to I2C or SPI control
+              for the pcm3168a codecs. Do not include this if hardware control
+              is selected for the pcm3168a codecs. This codec is connected to
+              i2s out channels 3,4,5
+
+  - pcm3168a-2-format : i2s format. "i2s", "left_j", "right_j", "dsp_a" and
+                        "dsp_b" are supported by the pcm3168a
+
+  - pcm3168a-2-bitclock-inversion : i2s BCLK inversion used by pcm3168a-2
+
+  - pcm3168a-2-frame-inversion : i2s LRCLK inversion used by pcm3168a-2
+
+  - clock-master : phandle of the i2s out BCLK and LRCLK master. If these
+                   clocks are not required, or provided externally under
+                   hardware control, this may be omitted
+
+Required i2s_out subnode properties:
+
+  - cpu-dai : phandle of i2s in cpu dai
+
+  - cpu-format : i2s in cpu format. "i2s" and "left_j" are supported by
+                 the pistachio BuB iteration of the img i2s in controller
+
+Optional i2s_out subnode properties:
+
+  - cpu-bitclock-inversion : i2s in cpu BCLK inversion
+
+  - cpu-frame-inversion : i2s in cpu LRCLK inversion
+
+  - pcm3060 : phandle to pcm3060 codec (ADC). This should be present if
+              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_NONE and
+              the main board switches are set to I2C or SPI control for the
+              pcm3060. Do not include this if hardware control is selected
+              for the pcm3060 codec. This codec is connected to i2s in
+              channel 0
+
+  - pcm3060-format : i2s format. "i2s", "left_j" and "right_j" are supported
+                     by the pcm3060
+
+  - pcm3060-bitclock-inversion : i2s BCLK inversion used by pcm3060
+
+  - pcm3060-frame-inversion : i2s LRCLK inversion used by pcm3060
+
+  - pcm3168a-1 : phandle to 1st pcm3168a codec (ADC). This should be present if
+              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_CODEC and
+              the codec daughterboard switches are set to I2C or SPI control
+              for the pcm3168a codecs. Do not include this if hardware control
+              is selected for the pcm3168a codecs. This codec is connected to
+              i2s in channels 0,1,2
+
+  - pcm3168a-1-format : i2s format. "i2s", "left_j", "right_j", "dsp_a" and
+                        "dsp_b" are supported by the pcm3168a
+
+  - pcm3168a-1-bitclock-inversion : i2s BCLK inversion used by pcm3168a-1
+
+  - pcm3168a-1-frame-inversion : i2s LRCLK inversion used by pcm3168a-1
+
+  - pcm3168a-2 : phandle to 2nd pcm3168a codec (ADC). This should be present if
+              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_CODEC and
+              the codec daughterboard switches are set to I2C or SPI control
+              for the pcm3168a codecs. Do not include this if hardware control
+              is selected for the pcm3168a codecs. This codec is connected to
+              i2s in channels 3,4,5
+
+  - pcm3168a-2-format : i2s format. "i2s", "left_j", "right_j", "dsp_a" and
+                        "dsp_b" are supported by the pcm3168a
+
+  - pcm3168a-2-bitclock-inversion : i2s BCLK inversion used by pcm3168a-2
+
+  - pcm3168a-2-frame-inversion : i2s LRCLK inversion used by pcm3168a-2
+
+  - clock-master : phandle of the i2s in BCLK and LRCLK master. If these
+                   clocks are not required, or provided externally under
+                   hardware control, this may be omitted. There is an internal
+                   loopback available that allows the i2s out BCLK/LRCLK to be
+                   used for the i2s in block. Link to the i2s out cpu node
+                   to use this
+
+Example:
+
+pistachio_audio_card {
+	compatible = "img,pistachio-bub-audio";
+
+	clocks = <&clk_core CLK_AUDIO_PLL &clk_core CLK_I2S_DIV
+	          &clk_core CLK_AUDIO &event_timer>;
+	clock-names = "audio_pll", "i2s_mclk", "dac_clk", "evt_clk";
+
+	img,daughterboard = <PISTACHIO_DAUGHTERBOARD_CODEC>;
+	img,mclk = <PISTACHIO_MCLK_DAC_CLK>;
+	img,cr-periph = <&cr_periph>;
+	img,cr-top = <&cr_top>;
+	img,event-timer = <&event_timer>;
+
+	spdif_out: spdif_out {
+		cpu-dai = <&spdif_out_cpu>;
+	};
+
+	spdif_in: spdif_in {
+		cpu-dai = <&spdif_in_cpu>;
+	};
+
+	parallel_out: parallel_out {
+		cpu-dai = <&parallel_out_cpu>;
+		tpa6130a2 = <&tpa6130a2>;
+	};
+
+	i2s_out: i2s_out {
+		cpu-dai = <&i2s_out_cpu>;
+		cpu-format = "i2s";
+		pcm3168a-1 = <&pcm3168a_1 0>;
+		pcm3168a-1-format = "i2s";
+		pcm3168a-2 = <&pcm3168a_2 0>;
+		pcm3168a-2-format = "i2s";
+		clock-master = <&i2s_out_cpu>;
+	};
+
+	i2s_in: i2s_in {
+		cpu-dai = <&i2s_in_cpu>;
+		cpu-format = "i2s";
+		pcm3168a-1 = <&pcm3168a_1 1>;
+		pcm3168a-1-format = "i2s";
+		pcm3168a-2 = <&pcm3168a_2 1>;
+		pcm3168a-2-format = "i2s";
+		clock-master = <&pcm3168a_2 1>;
+	};
+};
