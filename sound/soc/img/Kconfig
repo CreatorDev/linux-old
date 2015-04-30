@@ -48,3 +48,21 @@ config SND_SOC_IMG_SPDIF_OUT
 config SND_SOC_IMG_PISTACHIO_EVENT_TIMER
 	tristate "Support for Pistachio SoC Event Timer Driver"
 	depends on SND_SOC_IMG
+
+
+config SND_SOC_IMG_PISTACHIO_BUB
+	tristate "Audio support for Pistachio Bring-Up Board"
+	depends on SND_SOC_IMG
+	select SND_SOC_IMG_I2S_IN
+	select SND_SOC_IMG_I2S_OUT
+	select SND_SOC_IMG_PARALLEL_OUT
+	select SND_SOC_IMG_SPDIF_IN
+	select SND_SOC_IMG_SPDIF_OUT
+	select SND_SOC_IMG_PISTACHIO_EVENT_TIMER
+	select SND_SOC_PCM3168A_I2C
+	select SND_SOC_PCM3168A_SPI
+	select SND_SOC_PCM3060_I2C
+	select SND_SOC_PCM3060_SPI
+	select SND_SOC_TPA6130A2
+	help
+	  Audio support for Imagination Technologies Pistachio Bring-Up Board
