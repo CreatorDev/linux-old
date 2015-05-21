@@ -57,9 +57,10 @@ static struct pistachio_fixed_factor pistachio_ffs[] __initdata = {
 };
 
 static struct pistachio_div pistachio_divs[] __initdata = {
-	DIV(CLK_MIPS_INTERNAL_DIV, "mips_internal_div", "mips_pll_mux",
-	    0x204, 2),
-	DIV(CLK_MIPS_DIV, "mips_div", "mips_internal_div", 0x208, 8),
+	DIV_F(CLK_MIPS_INTERNAL_DIV, "mips_internal_div", "mips_pll_mux",
+		0x204, 2, CLK_SET_RATE_PARENT, CLK_DIVIDER_READ_ONLY),
+	DIV_F(CLK_MIPS_DIV, "mips_div", "mips_internal_div",
+		0x208, 8, CLK_SET_RATE_PARENT, CLK_DIVIDER_READ_ONLY),
 	DIV_F(CLK_AUDIO_DIV, "audio_div", "audio_mux",
 		0x20c, 8, 0, CLK_DIVIDER_ROUND_CLOSEST),
 	DIV_F(CLK_I2S_DIV, "i2s_div", "audio_pll_mux",
@@ -126,7 +127,8 @@ PNAME(mux_xtal_bt) = { "xtal", "bt_pll" };
 static struct pistachio_mux pistachio_muxes[] __initdata = {
 	MUX(CLK_AUDIO_REF_MUX, "audio_refclk_mux", mux_xtal_audio_refclk,
 	    0x200, 0),
-	MUX(CLK_MIPS_PLL_MUX, "mips_pll_mux", mux_xtal_mips, 0x200, 1),
+	MUX_F(CLK_MIPS_PLL_MUX, "mips_pll_mux", mux_xtal_mips,
+	    0x200, 1, CLK_SET_RATE_PARENT),
 	MUX(CLK_AUDIO_PLL_MUX, "audio_pll_mux", mux_xtal_audio, 0x200, 2),
 	MUX(CLK_AUDIO_MUX, "audio_mux", mux_audio_debug, 0x200, 4),
 	MUX(CLK_RPU_V_PLL_MUX, "rpu_v_pll_mux", mux_xtal_rpu_v, 0x200, 5),
@@ -143,8 +145,26 @@ static struct pistachio_mux pistachio_muxes[] __initdata = {
 	MUX(CLK_BT_PLL_MUX, "bt_pll_mux", mux_xtal_bt, 0x200, 17),
 };
 
+static struct pistachio_pll_rate_table mips_pll_rates[] = {
+	INT_PLL_RATES(52000000, 208000000, 5, 40,  2, 1),
+	INT_PLL_RATES(52000000, 234000000, 5, 45,  2, 1),
+	INT_PLL_RATES(52000000, 260000000, 5, 50,  2, 1),
+	INT_PLL_RATES(52000000, 286000000, 5, 55,  2, 1),
+	INT_PLL_RATES(52000000, 312000000, 5, 60,  2, 1),
+	INT_PLL_RATES(52000000, 338000000, 5, 65,  2, 1),
+	INT_PLL_RATES(52000000, 364000000, 5, 70,  2, 1),
+	INT_PLL_RATES(52000000, 390000000, 5, 75,  2, 1),
+	INT_PLL_RATES(52000000, 416000000, 5, 80,  2, 1),
+	INT_PLL_RATES(52000000, 442000000, 5, 85,  2, 1),
+	INT_PLL_RATES(52000000, 468000000, 5, 90,  2, 1),
+	INT_PLL_RATES(52000000, 494000000, 5, 95,  2, 1),
+	INT_PLL_RATES(52000000, 520000000, 5, 100, 2, 1),
+	INT_PLL_RATES(52000000, 546000000, 5, 105, 2, 1),
+};
+
 static struct pistachio_pll pistachio_plls[] __initdata = {
-	PLL_FIXED(CLK_MIPS_PLL, "mips_pll", "xtal", PLL_GF40LP_LAINT, 0x0),
+	PLL(CLK_MIPS_PLL, "mips_pll", "xtal", PLL_GF40LP_LAINT, 0x0,
+	    mips_pll_rates),
 	PLL_FIXED(CLK_AUDIO_PLL, "audio_pll", "audio_refclk_mux",
 		  PLL_GF40LP_FRAC, 0xc),
 	PLL_FIXED(CLK_RPU_V_PLL, "rpu_v_pll", "xtal", PLL_GF40LP_LAINT, 0x20),

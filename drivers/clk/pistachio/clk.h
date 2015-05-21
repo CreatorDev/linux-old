@@ -121,6 +121,20 @@ struct pistachio_pll_rate_table {
 	unsigned int frac;
 };
 
+#define INT_PLL_RATES(_fref, _fout, _refdiv, _fbdiv,		\
+		      _postdiv1, _postdiv2)			\
+	{							\
+		.fref		= _fref,			\
+		.fout		= _fout,			\
+		.fout_min	= _fout,			\
+		.fout_max	= _fout,			\
+		.refdiv		= _refdiv,			\
+		.fbdiv		= _fbdiv,			\
+		.postdiv1	= _postdiv1,			\
+		.postdiv2	= _postdiv2,			\
+		.frac		= 0,				\
+	}
+
 enum pistachio_pll_type {
 	PLL_GF40LP_LAINT,
 	PLL_GF40LP_FRAC,
