@@ -61,6 +61,14 @@
 	};
 };
 
+&uccp {
+    status = "okay";
+};
+
+&bt {
+    status = "okay";
+};
+
 &uart0 {
 	status = "okay";
 };

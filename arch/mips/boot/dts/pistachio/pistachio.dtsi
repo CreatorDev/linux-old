@@ -43,6 +43,47 @@
 		};
 	};
 
+	uccp: bt-uccp@0 {
+		compatible = "img,pistachio-uccp-base";
+		/* RPU system bus */
+		reg = <0x18480000 0x40000>;
+		status = "disabled";
+		interrupts = <GIC_SHARED 67 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&clk_core CLK_RPU_CORE>,
+			<&clk_core CLK_BT>,
+			<&clk_core CLK_BT_DIV4>,
+			<&clk_core CLK_BT_DIV8>;
+		clock-names = "rpu_core",
+			"bt",
+			"bt_div4",
+			"bt_div8";
+		assigned-clocks = <&clk_core CLK_BT_PLL_MUX>,
+			<&clk_core CLK_RPU_CORE_DIV>,
+			<&clk_core CLK_BT_DIV>,
+			<&clk_core CLK_BT_DIV4_DIV>,
+			<&clk_core CLK_BT_DIV8_DIV>,
+			<&clk_core CLK_BT_PLL>;
+		assigned-clock-parents = <&clk_core CLK_BT_PLL>;
+		assigned-clock-rates = <0>,
+			<52000000>,
+			<104000000>,
+			<26000000>,
+			<13000000>,
+			<0>;
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+
+	bt: bt@0 {
+		compatible = "img,pistachio-uccp-bt";
+		reg = <0x1A000000 0x1000>;
+		status = "disabled";
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+
 	i2c0: i2c@18100000 {
 		compatible = "img,scb-i2c";
 		reg = <0x18100000 0x200>;
