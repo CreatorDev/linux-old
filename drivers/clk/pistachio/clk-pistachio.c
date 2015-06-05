@@ -162,6 +162,18 @@ static struct pistachio_pll_rate_table mips_pll_rates[] = {
 	INT_PLL_RATES(52000000, 546000000, 5, 105, 2, 1),
 };
 
+static struct pistachio_pll_rate_table wifi_pll_rates[] = {
+	{
+		.fref		= 52000000,
+		.fout		= 320000000,
+		.refdiv		= 0x1,
+		.fbdiv		= 0x18,
+		.frac		= 0x9d89d9,
+		.postdiv1	= 0x4,
+		.postdiv2	= 0x1,
+	},
+};
+
 static struct pistachio_pll pistachio_plls[] __initdata = {
 	PLL(CLK_MIPS_PLL, "mips_pll", "xtal", PLL_GF40LP_LAINT, 0x0,
 	    mips_pll_rates),
@@ -170,7 +182,8 @@ static struct pistachio_pll pistachio_plls[] __initdata = {
 	PLL_FIXED(CLK_RPU_V_PLL, "rpu_v_pll", "xtal", PLL_GF40LP_LAINT, 0x20),
 	PLL_FIXED(CLK_RPU_L_PLL, "rpu_l_pll", "xtal", PLL_GF40LP_LAINT, 0x2c),
 	PLL_FIXED(CLK_SYS_PLL, "sys_pll", "xtal", PLL_GF40LP_FRAC, 0x38),
-	PLL_FIXED(CLK_WIFI_PLL, "wifi_pll", "xtal", PLL_GF40LP_FRAC, 0x4c),
+	PLL(CLK_WIFI_PLL, "wifi_pll", "xtal", PLL_GF40LP_FRAC,
+	    0x4c, wifi_pll_rates),
 	PLL_FIXED(CLK_BT_PLL, "bt_pll", "xtal", PLL_GF40LP_LAINT, 0x60),
 };
 
