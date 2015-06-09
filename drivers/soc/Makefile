@@ -3,6 +3,7 @@
 #
 
 obj-$(CONFIG_SOC_BRCMSTB)	+= brcmstb/
+obj-$(CONFIG_SOC_IMG)           += img/
 obj-$(CONFIG_MACH_DOVE)		+= dove/
 obj-$(CONFIG_ARCH_MEDIATEK)	+= mediatek/
 obj-$(CONFIG_ARCH_QCOM)		+= qcom/
