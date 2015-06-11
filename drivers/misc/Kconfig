@@ -525,6 +525,19 @@ config VEXPRESS_SYSCFG
 	  bus. System Configuration interface is one of the possible means
 	  of generating transactions on this bus.
 
+config IMG_PDM
+	tristate "Imagination Technologies PDM driver"
+	depends on HAS_IOMEM
+	depends on MFD_SYSCON
+	depends on COMMON_CLK
+	depends on MIPS || COMPILE_TEST
+	help
+	  PDM driver for Imagination Technologies PDM block which supports 4
+	  channels.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called img-pdm.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
