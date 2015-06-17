@@ -245,7 +245,7 @@
 		clock-names = "sys", "spfi";
 		dmas = <&mdc 9 0xffffffff 0>, <&mdc 10 0xffffffff 0>;
 		dma-names = "rx", "tx";
-		spi-max-frequency = <50000000>;
+		spfi-max-frequency = <50000000>;
 		status = "disabled";
 
 		#address-cells = <1>;
@@ -261,7 +261,7 @@
 		dmas = <&mdc 1 0xffffffff 0>, <&mdc 2 0xffffffff 0>;
 		dma-names = "rx", "tx";
 		img,supports-quad-mode;
-		spi-max-frequency = <50000000>;
+		spfi-max-frequency = <50000000>;
 		status = "disabled";
 
 		#address-cells = <1>;
