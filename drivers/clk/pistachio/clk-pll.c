@@ -112,6 +112,20 @@ static inline u32 pll_frac_get_mode(struct clk_hw *hw)
 	return val ? PLL_MODE_INT : PLL_MODE_FRAC;
 }
 
+static inline void pll_frac_set_mode(struct clk_hw *hw, u32 mode)
+{
+	struct pistachio_clk_pll *pll = to_pistachio_pll(hw);
+	u32 val;
+
+	val = pll_readl(pll, PLL_CTRL3);
+	if (mode == PLL_MODE_INT)
+		val |= PLL_FRAC_CTRL3_DSMPD | PLL_FRAC_CTRL3_DACPD;
+	else
+		val &= ~(PLL_FRAC_CTRL3_DSMPD | PLL_FRAC_CTRL3_DACPD);
+
+	pll_writel(pll, val, PLL_CTRL3);
+}
+
 static struct pistachio_pll_rate_table *
 pll_get_params(struct pistachio_clk_pll *pll, unsigned long fref,
 	       unsigned long fout)
@@ -208,13 +222,9 @@ static int pll_gf40lp_frac_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (!params || !params->refdiv)
 		return -EINVAL;
 
-	/* get operating mode and calculate vco accordingly */
+	/* calculate vco */
 	vco = params->fref;
-	if (pll_frac_get_mode(hw) == PLL_MODE_INT)
-		vco *= params->fbdiv << 24;
-	else
-		vco *= (params->fbdiv << 24) + params->frac;
-
+	vco *= (params->fbdiv << 24) + params->frac;
 	vco = div64_u64(vco, params->refdiv << 24);
 
 	if (vco < MIN_VCO_FRAC_FRAC || vco > MAX_VCO_FRAC_FRAC)
@@ -264,6 +274,12 @@ static int pll_gf40lp_frac_set_rate(struct clk_hw *hw, unsigned long rate,
 		(params->postdiv1 << PLL_FRAC_CTRL2_POSTDIV1_SHIFT) |
 		(params->postdiv2 << PLL_FRAC_CTRL2_POSTDIV2_SHIFT);
 	pll_writel(pll, val, PLL_CTRL2);
+
+	/* set operating mode */
+	if (params->frac)
+		pll_frac_set_mode(hw, PLL_MODE_FRAC);
+	else
+		pll_frac_set_mode(hw, PLL_MODE_INT);
 
 	if (enabled)
 		pll_lock(pll);
