@@ -104,8 +104,9 @@
 #define CLK_SD_HOST_MUX			110
 #define CLK_BT_PLL_MUX			111
 #define CLK_DEBUG_MUX			112
+#define CLK_RPU_CORE_MUX_1		113
 
-#define CLK_NR_CLKS			113
+#define CLK_NR_CLKS			114
 
 /* Peripheral gate clocks */
 #define PERIPH_CLK_SYS			0
