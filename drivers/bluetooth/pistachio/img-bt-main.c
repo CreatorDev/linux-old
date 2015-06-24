@@ -63,6 +63,8 @@ static const char *client_name = "img-bt";
 #define RPU_ACK(length) ((u16)(length | 0x8000))
 #define RPU_REQ(length) ((u16)(length & 0x7FFF))
 
+#define BLUETOOTH_ID 1
+
 typedef void __iomem *ioaddr_t;
 
 /*
@@ -197,7 +199,7 @@ static void req_from_controller(struct work_struct *tbd)
 	gateway_send(pld);
 
 	circ_buf_ext_give(&xmit_buffers.rx, user_data_length);
-	img_transport_notify(RPU_ACK(user_data_length));
+	img_transport_notify(RPU_ACK(user_data_length), BLUETOOTH_ID);
 
 exit:
 	kfifo_put(&work_depot, work);
@@ -223,7 +225,7 @@ static void req_to_controller(struct work_struct *tbd)
 		 */
 		payload_to_circ_buf_ext(pld, &xmit_buffers.tx);
 		payload_delete(pld);
-		img_transport_notify(RPU_REQ(space_needed));
+		img_transport_notify(RPU_REQ(space_needed), BLUETOOTH_ID);
 	} else {
 		/*
 		 * Save for backlog processing, which should be fired on every
@@ -248,13 +250,8 @@ static void do_tx_backlog(struct work_struct *tbd)
 	if (kfifo_is_empty(&tx_backlog))
 		goto exit;
 
-	while (true) {
-		if (!kfifo_peek(&tx_backlog, &pld)) {
-			/* The fifo was empty */
-			break;
-		}
-		if (circ_buf_ext_space(&xmit_buffers.tx) < payload_length(pld))
-			break;
+	while (kfifo_peek(&tx_backlog, &pld) &&
+		circ_buf_ext_space(&xmit_buffers.tx) >= payload_length(pld)) {
 
 		length_sum += payload_length(pld);
 		/*
@@ -269,7 +266,7 @@ static void do_tx_backlog(struct work_struct *tbd)
 		payload_delete(pld);
 	}
 
-	img_transport_notify(RPU_REQ((u16)length_sum));
+	img_transport_notify(RPU_REQ((u16)length_sum), BLUETOOTH_ID);
 
 exit:
 	(void)kfifo_put(&work_depot, work);
@@ -437,7 +434,7 @@ static void img_bt_pltfr_reg_handler_rollback(unsigned int client_id)
 	img_transport_remove_callback(client_id);
 }
 
-static int img_bt_pltfr_probe(struct platform_device *pdev)
+static int __init img_bt_pltfr_probe(struct platform_device *pdev)
 {
 	int result = 0;
 
@@ -459,7 +456,7 @@ static int img_bt_pltfr_probe(struct platform_device *pdev)
 		goto bufsetup_failed;
 	}
 
-	result = img_bt_pltfr_reg_handler(0);
+	result = img_bt_pltfr_reg_handler(BLUETOOTH_ID);
 	if (result) {
 		err("failed to install callback in the transport interface\n");
 		goto callback_regist_failed;
@@ -503,7 +500,6 @@ static const struct of_device_id img_bt_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, img_bt_dt_ids);
 
 struct platform_driver img_bt_driver = {
-	.probe = img_bt_pltfr_probe,
 	.remove = img_bt_pltfr_remove,
 	.driver = {
 		.name   = "img-bt",
@@ -518,18 +514,7 @@ struct platform_driver img_bt_driver = {
 
 static int __init img_bt_init(void)
 {
-	int result = 0;
-
-	result = platform_driver_register(&img_bt_driver);
-	if (result) {
-		dbg("failed to register platform driver\n");
-		goto pltfr_regist_failed;
-	}
-
-	return result;
-
-pltfr_regist_failed:
-	return result;
+	return platform_driver_probe(&img_bt_driver, img_bt_pltfr_probe);
 }
 
 static void __exit img_bt_exit(void)

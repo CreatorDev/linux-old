@@ -42,21 +42,36 @@
  */
 typedef void (*img_transport_handler)(u16 user_data);
 
-int img_transport_notify(u16 user_data);
+/*
+ * Note that this function may sleep forever when,
+ * for example, RPU is unable to respond.
+ *
+ * Possible return values:
+ * 0		: RPU has been notified
+ */
+void img_transport_notify(u16 user_data, int user_id);
 
 /*
  * Possible return values:
- *  @ -ENOBUFS  : all handler slots in use
- *  @ -EBADSLT  : id unavailable
- *  @  0        : callback registered
+ * @ -ETIME	: request timed out
+ * @ 0		: RPU has been notified
+ */
+int __must_check img_transport_notify_timeout(u16 user_data,
+					int user_id,
+					long jiffies_timeout);
+
+/*
+ * Possible return values:
+ *  @ -EBADSLT	: id unavailable
+ *  @  0	: callback registered
  */
 int img_transport_register_callback(img_transport_handler,
 					unsigned int client_id);
 
 /*
  * Possible return values:
- * @ -EIDRM    : client id not found
- * @  0        : callback removed
+ *  @ -EBADSLT	: client id not found
+ *  @  0	: callback removed
  */
 int img_transport_remove_callback(unsigned int client_id);
 
