@@ -40,6 +40,7 @@
 #include <linux/proc_fs.h>
 #include <linux/semaphore.h>
 #include <linux/slab.h>
+#include <linux/spinlock.h>
 #include <linux/clk.h>
 
 #include "img-hostport-main.h"
@@ -55,7 +56,7 @@ static const char *hal_name = "img-hostport";
 #define diagdbgn(format, ...) \
 	dbgn("%s : %d : " format, __func__, __LINE__, ## __VA_ARGS__)
 
-#define COMMON_HOST_ID 1
+#define COMMON_HOST_ID 0
 #define CALLEE_MASK 0x000000f0
 #define CALLEE_SHIFT 4
 #define CALLER_MASK 0x0000000f
@@ -75,6 +76,11 @@ static const char * const clock_names[] = {"rpu_core", "bt", "bt_div4",
 static struct clk *clocks[CLK_QTY];
 
 /*
+ * Forward declarations
+ */
+static void notify_common(u16 user_data, int user_id);
+
+/*
  * Public interface procs
  */
 
@@ -82,39 +88,44 @@ int img_transport_register_callback(
 		img_transport_handler poke,
 		unsigned int client_id)
 {
-	/*
-	 * TODO: watch out for an interrupt!
-	 * This variable has to be protected by
-	 * a spinlock => accessor procs needed.
-	 */
-	module->rcv_handler = poke;
+	if (client_id > MAX_ENDPOINT_ID || module->endpoints.f[client_id])
+		return -EBADSLT;
 
-	/*
-	 * TODO: proper error reporting needed.
-	 * For now, just succeed every time.
-	 */
+	spin_lock(module->endpoints.in_use + client_id);
+	module->endpoints.f[client_id] = poke;
+	spin_unlock(module->endpoints.in_use + client_id);
+
 	return 0;
 }
 EXPORT_SYMBOL(img_transport_register_callback);
 
-int img_transport_notify(u16 user_data)
+void img_transport_notify(u16 user_data, int user_id)
 {
 	down(&host_to_uccp_core_lock);
-	iowrite32(0x87 << 24 | user_data << 8 | 0x00,
-			(void __iomem *)H2C_CMD_ADDR(module->uccp_mem_addr));
-
-	/*
-	 * TODO: for now, just succeed every time.
-	 * Proper error reporting needed.
-	 */
-	return 0;
+	notify_common(user_data, user_id);
 }
 EXPORT_SYMBOL(img_transport_notify);
 
+int __must_check img_transport_notify_timeout(u16 user_data,
+					int user_id,
+					long jiffies_timeout)
+{
+	if (-ETIME == down_timeout(&host_to_uccp_core_lock, jiffies_timeout)) {
+		return -ETIME;
+	}
+	notify_common(user_data, user_id);
+	return 0;
+}
+EXPORT_SYMBOL(img_transport_notify_timeout);
+
 int img_transport_remove_callback(unsigned int client_id)
 {
-	/* TODO: proper locking */
-	module->rcv_handler = NULL;
+	if (client_id > MAX_ENDPOINT_ID || !module->endpoints.f[client_id])
+		return -EBADSLT;
+
+	spin_lock(module->endpoints.in_use + client_id);
+	module->endpoints.f[client_id] = NULL;
+	spin_unlock(module->endpoints.in_use + client_id);
 
 	return 0;
 }
@@ -124,11 +135,26 @@ EXPORT_SYMBOL(img_transport_remove_callback);
  * Private procs
  */
 
+static u8 id_to_field(int id)
+{
+	id &= 0xF;
+	return (id << 4) | id;
+}
+
+static void notify_common(u16 user_data, int user_id)
+{
+	iowrite32(0x87 << 24 | user_data << 8 | id_to_field(user_id),
+			(void __iomem *)H2C_CMD_ADDR(module->uccp_mem_addr));
+}
+
 static irqreturn_t hal_irq_handler(int    irq, void  *p)
 {
 	/* p is module here! */
+	unsigned long flags;
 	unsigned int reg_value;
 	unsigned int value, caller_id, callee_id, user_message, first_bit;
+	img_transport_handler handler;
+	spinlock_t *handler_in_use;
 
 	reg_value =
 		readl((void __iomem *)(C2H_CMD_ADDR(module->uccp_mem_addr)));
@@ -143,16 +169,22 @@ static irqreturn_t hal_irq_handler(int    irq, void  *p)
 	/* Clear the uccp interrupt */
 	value = 0;
 	value |= BIT(C_INT_CLR_SHIFT);
-	writel(*((unsigned long *)&(value)),
-			(void __iomem *)(H2C_ACK_ADDR(module->uccp_mem_addr)));
+	writel(value, (void __iomem *)(H2C_ACK_ADDR(module->uccp_mem_addr)));
 
 	callee_id = CALLEE(reg_value);
 	caller_id = CALLER(reg_value);
 	user_message = USERMSG(reg_value);
 	/*
-	 * we are ready to release the spinlock
-	 * once we get the all zeros message
+	 * We are ready to release the spinlock
+	 * once we get the all zeros message.
+	 *
+	 * callee_id is tainted, therefore must be checked.
 	 */
+	if (callee_id > MAX_ENDPOINT_ID) {
+		errn("endpoint with id = %u doesn't exist", callee_id);
+		return IRQ_HANDLED;
+	}
+
 	if (COMMON_HOST_ID == callee_id) {
 		switch (user_message) {
 		case 0:
@@ -169,10 +201,14 @@ static irqreturn_t hal_irq_handler(int    irq, void  *p)
 			errn("\tuser_message : %d", user_message);
 		}
 	} else {
-		/* invoke client callback */
-		/* TODO: add support for multiple IDs */
-		if (NULL != module->rcv_handler)
-			module->rcv_handler((u16)user_message);
+		handler = module->endpoints.f[callee_id];
+		handler_in_use = module->endpoints.in_use + callee_id;
+		if (NULL != handler) {
+			spin_lock_irqsave(handler_in_use, flags);
+			handler((u16)user_message);
+			spin_unlock_irqrestore(handler_in_use, flags);
+		} else
+			errn("endpoint with id = %u not registered", callee_id);
 	}
 
 	return IRQ_HANDLED;
@@ -185,16 +221,14 @@ static void img_hostport_irq_on(void)
 	/* Set external pin irq enable for host_irq and uccp_irq */
 	value = readl((void __iomem *)C_INT_ENAB_ADDR(module->uccp_mem_addr));
 	value |= BIT(C_INT_IRQ_ENAB_SHIFT);
-	writel(*((unsigned long *)&(value)),
+	writel(value,
 		(void __iomem *)(C_INT_ENAB_ADDR(module->uccp_mem_addr)));
 
 	/* Enable raising uccp_int when UCCP_INT = 1 */
 	value = 0;
 	value |= BIT(C_INT_EN_SHIFT);
-	writel(*((unsigned long *)&(value)),
+	writel(value,
 		(void __iomem *)(C_INT_ENABLE_ADDR(module->uccp_mem_addr)));
-
-	return;
 }
 
 static void img_hostport_irq_off(void)
@@ -204,16 +238,14 @@ static void img_hostport_irq_off(void)
 	/* Reset external pin irq enable for host_irq and uccp_irq */
 	value = readl((void __iomem *)C_INT_ENAB_ADDR(module->uccp_mem_addr));
 	value &= ~(BIT(C_INT_IRQ_ENAB_SHIFT));
-	writel(*((unsigned long   *)&(value)),
+	writel(value,
 		(void __iomem *)(C_INT_ENAB_ADDR(module->uccp_mem_addr)));
 
 	/* Disable raising uccp_int when UCCP_INT = 1 */
 	value = 0;
 	value &= ~(BIT(C_INT_EN_SHIFT));
-	writel(*((unsigned long *)&(value)),
+	writel(value,
 		(void __iomem *)(C_INT_ENABLE_ADDR(module->uccp_mem_addr)));
-
-	return;
 }
 
 static int img_hostport_pltfr_irqregist(int irq_line)
@@ -310,12 +342,16 @@ static void img_hostport_pltfr_memmap_rollback(void)
 
 static int img_hostport_pltfr_memsetup(void)
 {
+	int i;
+
 	module = kzalloc(sizeof(struct img_hostport), GFP_KERNEL);
 
 	if (IS_ERR_OR_NULL(module))
 		return PTR_ERR(module);
-	else
-		return 0;
+
+	for (i = 0; i < MAX_ENDPOINTS; i++)
+		spin_lock_init(module->endpoints.in_use + i);
+	return 0;
 }
 
 static void img_hostport_pltfr_memsetup_rollback(void)
