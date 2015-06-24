@@ -35,8 +35,16 @@
 
 #include "img-transport.h"
 
+#define MAX_ENDPOINTS 3
+#define MAX_ENDPOINT_ID (MAX_ENDPOINTS - 1)
+
+struct img_hostport_endpoints {
+	img_transport_handler f[MAX_ENDPOINTS];
+	spinlock_t in_use[MAX_ENDPOINTS];
+};
+
 struct img_hostport {
-	img_transport_handler rcv_handler;
+	struct img_hostport_endpoints endpoints;
 	/* RPU system bus remapped addresses */
 	void __iomem *uccp_mem_addr;
 	void __iomem *uccp_base_addr;
