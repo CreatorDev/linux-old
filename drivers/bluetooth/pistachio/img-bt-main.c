@@ -433,7 +433,7 @@ static void img_bt_pltfr_reg_handler_rollback(unsigned int client_id)
 	img_transport_remove_callback(client_id);
 }
 
-static int img_bt_pltfr_probe(struct platform_device *pdev)
+static int __init img_bt_pltfr_probe(struct platform_device *pdev)
 {
 	int result = 0;
 
@@ -514,18 +514,7 @@ struct platform_driver img_bt_driver = {
 
 static int __init img_bt_init(void)
 {
-	int result = 0;
-
-	result = platform_driver_register(&img_bt_driver);
-	if (result) {
-		dbg("failed to register platform driver\n");
-		goto pltfr_regist_failed;
-	}
-
-	return result;
-
-pltfr_regist_failed:
-	return result;
+	return platform_driver_probe(&img_bt_driver, img_bt_pltfr_probe);
 }
 
 static void __exit img_bt_exit(void)
