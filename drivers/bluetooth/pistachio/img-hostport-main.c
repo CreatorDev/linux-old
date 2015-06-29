@@ -378,7 +378,7 @@ static void img_hostport_pltfr_clksetup_rollback(void)
 
 }
 
-static int img_hostport_pltfr_probe(struct platform_device *pdev)
+static int __init img_hostport_pltfr_probe(struct platform_device *pdev)
 {
 	int result = 0;
 
@@ -465,7 +465,8 @@ static void __exit img_hostport_leave(void)
 
 static int __init img_hostport_entry(void)
 {
-	return platform_driver_register(&img_uccp_driver);
+	return platform_driver_probe(&img_uccp_driver,
+					img_hostport_pltfr_probe);
 }
 
 module_init(img_hostport_entry);
