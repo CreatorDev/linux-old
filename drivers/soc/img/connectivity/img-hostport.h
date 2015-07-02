@@ -33,7 +33,7 @@
 /* Include files */
 #include <linux/types.h>
 
-#include "img-transport.h"
+#include <soc/img/img-transport.h>
 
 #define MAX_ENDPOINTS 3
 #define MAX_ENDPOINT_ID (MAX_ENDPOINTS - 1)
@@ -46,42 +46,37 @@ struct img_hostport_endpoints {
 struct img_hostport {
 	struct img_hostport_endpoints endpoints;
 	/* RPU system bus remapped addresses */
-	void __iomem *uccp_mem_addr;
-	void __iomem *uccp_base_addr;
+	void __iomem *vbase;
+	void __iomem *vmtx_int_en;
+	void __iomem *vmtx_irq_en;
 	/* DTS entries */
-	phys_addr_t uccp_core_base;
-	unsigned long uccp_core_len;
+	struct resource *base;
+	struct resource *mtx_int_en;
+	struct resource *mtx_irq_en;
 	unsigned int irq_line;
 };
 
-#define C_REG_OFFSET 0x400
-
 /* Register H2C_CMD */
-#define H2C_CMD 0x0030
+#define H2C_CMD 0x0
 #define H2C_CMD_ADDR(base) ((base) + H2C_CMD)
 #define C_HOST_INT_SHIFT 31
 
 /* Register C2H_CMD */
-#define C2H_CMD 0x0034
+#define C2H_CMD 0x4
 #define C2H_CMD_ADDR(base) ((base) + C2H_CMD)
 
 /* Register H2C_ACK */
-#define H2C_ACK 0x0038
+#define H2C_ACK 0x8
 #define H2C_ACK_ADDR(base) ((base) + H2C_ACK)
 #define C_INT_CLR_SHIFT 31
 
 /* Register C2H_ACK */
-#define C2H_ACK 0x003C
+#define C2H_ACK 0xC
 #define C2H_ACK_ADDR(base) ((base) + C2H_ACK)
 
 /* Register C_INT_ENABLE */
-#define C_INT_ENABLE 0x0044
-#define C_INT_ENABLE_ADDR(base) ((base) + C_INT_ENABLE)
 #define C_INT_EN_SHIFT 31
-
-#define C_INT_ENAB 0x0000
-#define C_INT_ENAB_ADDR(base) ((base) + C_INT_ENAB)
-#define C_INT_IRQ_ENAB_SHIFT 15
+#define C_IRQ_EN_SHIFT 15
 
 #endif
 
