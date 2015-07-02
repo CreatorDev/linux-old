@@ -13,4 +13,37 @@ config IMG_EFUSE
 	  To compile this driver as a module, choose M here: the module will
 	  be called img-efuse.
 
+config IMG_CONNECTIVITY
+	tristate "Imagination Technologies UCCP base driver"
+	depends on HAS_IOMEM
+	default m
+	help
+	  Imagination Technologies UCCP driver which loads the firmware
+	  and sets it up for operation. Drivers providing separate
+	  features like Bluetooth or WLAN use this driver.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called img-connectivity.
+
+config IMG_HOSTPORT
+	tristate "Imagination Technologies Hostport driver"
+	depends on IMG_CONNECTIVITY
+	default m
+	help
+	  Imagination Technologies Hostport driver which provides the API to
+	  communicate with the UCCP through shared memory.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called img-hostport.
+
+config IMG_HOSTPORT_DUMMY_CLIENT
+	tristate "Imagination Technologies Hostport dummy client"
+	depends on IMG_HOSTPORT
+	default n
+	help
+	  An example how to use the API exported by the Hostport driver.
+
+	  To compile this driver as a module, choose M here: the module will
+	  be called img-hostport.
+
 endif # SOC_IMG
