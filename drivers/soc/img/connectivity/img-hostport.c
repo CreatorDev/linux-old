@@ -43,7 +43,7 @@
 #include <linux/spinlock.h>
 #include <linux/clk.h>
 
-#include "img-hostport-main.h"
+#include "img-hostport.h"
 
 static struct img_hostport *module;
 static const char *hal_name = "img-hostport";
@@ -65,15 +65,9 @@ static const char *hal_name = "img-hostport";
 #define CALLEE(reg) ((reg & CALLEE_MASK) >> CALLEE_SHIFT)
 #define CALLER(reg) (reg & CALLER_MASK)
 #define USERMSG(reg) ((reg & USERMSG_MASK) >> USERMSG_SHIFT)
+#define mtx_int_en_WIDTH 4
 
 DEFINE_SEMAPHORE(host_to_uccp_core_lock);
-
-enum {
-	CLK_RPU_CORE = 0, CLK_BT, CLK_BT_DIV4, CLK_BT_DIV8, CLK_QTY
-};
-static const char * const clock_names[] = {"rpu_core", "bt", "bt_div4",
-	"bt_div8"};
-static struct clk *clocks[CLK_QTY];
 
 /*
  * Forward declarations
@@ -88,6 +82,9 @@ int img_transport_register_callback(
 		img_transport_handler poke,
 		unsigned int client_id)
 {
+	/*
+	 * Make sure that the slot is free, i.e. null
+	 */
 	if (client_id > MAX_ENDPOINT_ID || module->endpoints.f[client_id])
 		return -EBADSLT;
 
@@ -144,7 +141,7 @@ static u8 id_to_field(int id)
 static void notify_common(u16 user_data, int user_id)
 {
 	iowrite32(0x87 << 24 | user_data << 8 | id_to_field(user_id),
-			(void __iomem *)H2C_CMD_ADDR(module->uccp_mem_addr));
+			(void __iomem *)H2C_CMD_ADDR(module->vbase));
 }
 
 static irqreturn_t hal_irq_handler(int    irq, void  *p)
@@ -157,7 +154,7 @@ static irqreturn_t hal_irq_handler(int    irq, void  *p)
 	spinlock_t *handler_in_use;
 
 	reg_value =
-		readl((void __iomem *)(C2H_CMD_ADDR(module->uccp_mem_addr)));
+		readl((void __iomem *)(C2H_CMD_ADDR(module->vbase)));
 
 	/* TODO: need to change that to support platforms other that 32 bit */
 	first_bit = (reg_value & (1 << 31)) >> 31;
@@ -169,7 +166,7 @@ static irqreturn_t hal_irq_handler(int    irq, void  *p)
 	/* Clear the uccp interrupt */
 	value = 0;
 	value |= BIT(C_INT_CLR_SHIFT);
-	writel(value, (void __iomem *)(H2C_ACK_ADDR(module->uccp_mem_addr)));
+	writel(value, (void __iomem *)(H2C_ACK_ADDR(module->vbase)));
 
 	callee_id = CALLEE(reg_value);
 	caller_id = CALLER(reg_value);
@@ -218,34 +215,31 @@ static void img_hostport_irq_on(void)
 {
 	unsigned int value = 0;
 
-	/* Set external pin irq enable for host_irq and uccp_irq */
-	value = readl((void __iomem *)C_INT_ENAB_ADDR(module->uccp_mem_addr));
-	value |= BIT(C_INT_IRQ_ENAB_SHIFT);
-	writel(value,
-		(void __iomem *)(C_INT_ENAB_ADDR(module->uccp_mem_addr)));
+	/*
+	 * Both mtx_irq and mtx_int must be asserted in order to
+	 * receive inerrupts on the host
+	 */
 
-	/* Enable raising uccp_int when UCCP_INT = 1 */
+	value = readl(module->vmtx_irq_en);
+	value |= BIT(C_IRQ_EN_SHIFT);
+	writel(value, module->vmtx_irq_en);
+
 	value = 0;
 	value |= BIT(C_INT_EN_SHIFT);
-	writel(value,
-		(void __iomem *)(C_INT_ENABLE_ADDR(module->uccp_mem_addr)));
+	writel(value, module->vmtx_int_en);
 }
 
 static void img_hostport_irq_off(void)
 {
 	unsigned int value = 0;
 
-	/* Reset external pin irq enable for host_irq and uccp_irq */
-	value = readl((void __iomem *)C_INT_ENAB_ADDR(module->uccp_mem_addr));
-	value &= ~(BIT(C_INT_IRQ_ENAB_SHIFT));
-	writel(value,
-		(void __iomem *)(C_INT_ENAB_ADDR(module->uccp_mem_addr)));
-
-	/* Disable raising uccp_int when UCCP_INT = 1 */
 	value = 0;
 	value &= ~(BIT(C_INT_EN_SHIFT));
-	writel(value,
-		(void __iomem *)(C_INT_ENABLE_ADDR(module->uccp_mem_addr)));
+	writel(value, module->vmtx_int_en);
+
+	value = readl(module->vmtx_irq_en);
+	value &= ~(BIT(C_IRQ_EN_SHIFT));
+	writel(value, module->vmtx_irq_en);
 }
 
 static int img_hostport_pltfr_irqregist(int irq_line)
@@ -266,9 +260,7 @@ static int img_hostport_pltfr_irqregist_rollback(int irq_line)
 
 static int img_hostport_pltfr_dtsetup(struct platform_device *pdev)
 {
-	/* struct resource *res; */
-	int irq_or_error, i;
-	const struct resource *rpu_sbus;
+	int irq_or_error;
 	/* Get resources from platform device */
 	irq_or_error = platform_get_irq(pdev, 0);
 	if (irq_or_error < 0) { /* it's an error */
@@ -277,22 +269,25 @@ static int img_hostport_pltfr_dtsetup(struct platform_device *pdev)
 	}
 	module->irq_line = irq_or_error; /* it's now a valid IRQ line */
 
-	rpu_sbus = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (rpu_sbus == NULL) {
-		err("no dts entry : reg with index 0\n");
-		return -ENOENT;
+	module->base = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						"Hostport control block");
+	if (IS_ERR_OR_NULL(module->base)) {
+		errn("hostport base address not found");
+		return PTR_ERR(module->base);
 	}
 
-	module->uccp_core_base = rpu_sbus->start;
-	module->uccp_core_len = (rpu_sbus->end) - (rpu_sbus->start) + 1;
+	module->mtx_int_en = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						"Hostport mtx_int enable");
+	if (IS_ERR_OR_NULL(module->mtx_int_en)) {
+		errn("mtx_int enable address not found");
+		return PTR_ERR(module->base);
+	}
 
-	/* Retrieve clocks */
-	for (i = 0; i < CLK_QTY; i++) {
-		clocks[i] = devm_clk_get(&pdev->dev, clock_names[i]);
-		if (IS_ERR(clocks[i])) {
-			errn("could not get %s clock", clock_names[i]);
-			return -ENOENT;
-		}
+	module->mtx_irq_en = platform_get_resource_byname(pdev, IORESOURCE_MEM,
+						"Hostport mtx_irq enable");
+	if (IS_ERR_OR_NULL(module->mtx_irq_en)) {
+		errn("mtx_irq enable address not found");
+		return PTR_ERR(module->mtx_irq_en);
 	}
 
 	return 0;
@@ -300,44 +295,40 @@ static int img_hostport_pltfr_dtsetup(struct platform_device *pdev)
 
 static void img_hostport_pltfr_dtsetup_rollback(void)
 {
-	module->uccp_core_base = 0;
-	module->uccp_core_len = 0;
+	module->base = 0;
+	module->mtx_int_en = 0;
 	module->irq_line = 0;
-	memset(clocks, 0, CLK_QTY*sizeof(clocks[0]));
 }
 
-static int img_hostport_pltfr_memmap(void)
+static int img_hostport_pltfr_memmap(struct platform_device *d)
 {
-#define REQUEST_MEM_FAILED_MSG "request_mem_region failed for UCCP region"
-	/* Map UCCP memory */
-	if (NULL == (request_mem_region(module->uccp_core_base,
-					module->uccp_core_len, "uccp"))) {
-		errn(REQUEST_MEM_FAILED_MSG ". base = %p, length = %lx\n",
-				(void *)module->uccp_core_base,
-				module->uccp_core_len);
-		goto uccp_memory_request_error;
+	/* Map RPU sbus */
+	module->vbase = devm_ioremap_resource(&d->dev, module->base);
+	if (NULL == module->vbase) {
+		errn("failed to remap Hostport control block");
+		return -ENOMEM;
 	}
 
-	module->uccp_base_addr = ioremap(module->uccp_core_base,
-			module->uccp_core_len);
-	if (module->uccp_base_addr == 0) {
-		errn("ioremap failed for UCCP mem region\n");
-		goto uccp_memory_remap_error;
+	module->vmtx_int_en = devm_ioremap_resource(&d->dev,
+							module->mtx_int_en);
+	if (module->vmtx_int_en == 0) {
+		errn("failed to remap mtx_int enable register");
+		return -ENOMEM;
 	}
-	module->uccp_mem_addr = module->uccp_base_addr + C_REG_OFFSET;
+
+	module->vmtx_irq_en = devm_ioremap_resource(&d->dev,
+							module->mtx_irq_en);
+	if (module->vmtx_irq_en == 0) {
+		errn("faield to remap mtx_irq enable register");
+		return -ENOMEM;
+	}
 
 	return 0;
-
-uccp_memory_remap_error:
-	release_mem_region(module->uccp_core_base, module->uccp_core_len);
-uccp_memory_request_error:
-	return -ENOMEM;
 }
 
 static void img_hostport_pltfr_memmap_rollback(void)
 {
-	iounmap((void __iomem *)module->uccp_base_addr);
-	release_mem_region(module->uccp_core_base, module->uccp_core_len);
+	module->vmtx_int_en = module->vbase = 0;
 }
 
 static int img_hostport_pltfr_memsetup(void)
@@ -359,26 +350,7 @@ static void img_hostport_pltfr_memsetup_rollback(void)
 	kfree(module);
 }
 
-static int img_hostport_pltfr_clksetup(struct platform_device *pdev)
-{
-	int i;
-
-	for (i = 0; i < CLK_QTY; i++)
-		clk_prepare_enable(clocks[i]);
-
-	return 0;
-}
-
-static void img_hostport_pltfr_clksetup_rollback(void)
-{
-	int i;
-
-	for (i = 0; i < CLK_QTY; i++)
-		clk_disable_unprepare(clocks[i]);
-
-}
-
-static int __init img_hostport_pltfr_probe(struct platform_device *pdev)
+static int img_hostport_pltfr_probe(struct platform_device *pdev)
 {
 	int result = 0;
 
@@ -394,16 +366,10 @@ static int __init img_hostport_pltfr_probe(struct platform_device *pdev)
 		goto dtsetup_failed;
 	}
 
-	result = img_hostport_pltfr_memmap();
+	result = img_hostport_pltfr_memmap(pdev);
 	if (result) {
 		errn("Memory remapping failed");
 		goto memmap_failed;
-	}
-
-	result = img_hostport_pltfr_clksetup(pdev);
-	if (result) {
-		err("Clock setup failed");
-		goto clksetup_failed;
 	}
 
 	/* Register irq handler, irq_line comes from dtsetup */
@@ -420,8 +386,6 @@ static int __init img_hostport_pltfr_probe(struct platform_device *pdev)
 	return result;
 
 irqsetup_failed:
-	img_hostport_pltfr_clksetup_rollback();
-clksetup_failed:
 	img_hostport_pltfr_memmap_rollback();
 memmap_failed:
 	img_hostport_pltfr_dtsetup_rollback();
@@ -435,7 +399,6 @@ static int img_hostport_pltfr_remove(struct platform_device *pdev)
 {
 	img_hostport_irq_off();
 	img_hostport_pltfr_irqregist_rollback(module->irq_line);
-	img_hostport_pltfr_clksetup_rollback();
 	img_hostport_pltfr_memmap_rollback();
 	img_hostport_pltfr_dtsetup_rollback();
 	img_hostport_pltfr_memsetup_rollback();
@@ -444,7 +407,7 @@ static int img_hostport_pltfr_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id img_hostport_dt_ids[] = {
-	{ .compatible = "img,pistachio-uccp-base" },
+	{ .compatible = "img,pistachio-uccp-hostport" },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, img_hostport_dt_ids);
