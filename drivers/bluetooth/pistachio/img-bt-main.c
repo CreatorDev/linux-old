@@ -38,9 +38,10 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 
+#include <soc/img/img-transport.h>
+
 #include "circ-buf-ext.h"
 #include "gateway.h"
-#include "img-transport.h"
 #include "payload.h"
 
 static const char *client_name = "img-bt";
@@ -499,7 +500,6 @@ static const struct of_device_id img_bt_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, img_bt_dt_ids);
 
 struct platform_driver img_bt_driver = {
-	.probe = img_bt_pltfr_probe,
 	.remove = img_bt_pltfr_remove,
 	.driver = {
 		.name   = "img-bt",
