@@ -43,6 +43,8 @@
 #include <linux/spinlock.h>
 #include <linux/clk.h>
 
+#include <soc/img/img-connectivity.h>
+
 #include "img-hostport.h"
 
 static struct img_hostport *module;
@@ -428,6 +430,12 @@ static void __exit img_hostport_leave(void)
 
 static int __init img_hostport_entry(void)
 {
+	/*
+	 * The following line is here purely to make sure that the current
+	 * module depends on img-connectivity when it's loaded as a module.
+	 */
+	 img_connectivity_version();
+
 	return platform_driver_probe(&img_uccp_driver,
 					img_hostport_pltfr_probe);
 }

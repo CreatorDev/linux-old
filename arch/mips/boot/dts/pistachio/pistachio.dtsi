@@ -121,6 +121,8 @@
 			<598000000>,
 			<320000000>,
 			<320000000>;
+		reg = <0x18480000 0x40000>, <0x1a000000 0x00066cc0>;
+		reg-names = "UCCP system bus", "UCCP packed GRAM";
 	};
 
 	uccphostport: uccp-hostport@0 {
