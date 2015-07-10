@@ -358,8 +358,9 @@
 		#clock-cells = <0>;
 		clocks = <&cr_periph SYS_CLK_EVENT_TIMER>,
 			 <&clk_core CLK_AUDIO>,
-			 <&clk_core CLK_EVENT_TIMER>;
-		clock-names = "sys","ref0","ref1";
+			 <&clk_core CLK_EVENT_TIMER>,
+			 <&clk_core CLK_AUDIO_PLL>;
+		clock-names = "sys","ref0","ref1","pll";
 		img,clk-select = <1>;
 		img,clk-rate = <12288000>;
 	};

@@ -26,6 +26,10 @@ Required properties:
 	"ref1"	Reference clock 1
 	"pll"	Audio PLL
 
+		If ATU (in adjustable pll mode) is to be used, the
+		following is required:
+	"pll"	Audio PLL
+
   - img,clk-select : Reference select
 
   - img,cr-periph : phandle of the peripheral control syscon node which
