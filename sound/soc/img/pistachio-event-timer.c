@@ -678,6 +678,9 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 	u32 clk_select, rate;
 	struct resource iomem;
 	struct device *dev = &pdev->dev;
+#ifdef CONFIG_ATU
+	struct clk *audio_pll;
+#endif
 
 	evt = devm_kzalloc(&pdev->dev, sizeof(*evt), GFP_KERNEL);
 	if (!evt)
@@ -801,7 +804,10 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 	timecounter_init(&evt->tc, (const struct cyclecounter *)&evt->cc, 0);
 
 #ifdef CONFIG_ATU
-	ret = atu_cyclecounter_register(&evt->cc, NULL);
+	audio_pll = devm_clk_get(&pdev->dev, "pll");
+	if (IS_ERR(audio_pll))
+		audio_pll = NULL;
+	ret = atu_cyclecounter_register(&evt->cc, audio_pll);
 	if(ret)
 		goto err_count;
 #else

@@ -25,11 +25,15 @@ Required properties:
 	"ref0"	Reference clock 0
 	"ref1"	Reference clock 1
 
+		If ATU (in adjustable pll mode) is to be used, the
+		following is required:
+	"pll"	Audio PLL
+
   - img,clk-select : Reference select
 
 Optional properties:
 
-  - img,clk-rate : Internal clock rate
+  - img,clk-rate : Initial internal clock rate
 
 Example:
 
