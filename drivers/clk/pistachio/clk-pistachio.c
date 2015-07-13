@@ -177,11 +177,35 @@ static struct pistachio_pll_rate_table wifi_pll_rates[] = {
 	},
 };
 
+static struct pistachio_pll_rate_table audio_pll_rates[] = {
+	{
+		.fref		= 52000000,
+		.fout_min	= 146250000,
+		.fout		= 147456000,
+		.fout_max	= 149499999,
+		.refdiv		= 0x1,
+		.fbdiv		= 0x2d,
+		.frac		= 0x5efee6,
+		.postdiv1	= 0x4,
+		.postdiv2	= 0x4,
+	}, {
+		.fref		= 52000000,
+		.fout_min	= 133250000,
+		.fout		= 135475200,
+		.fout_max	= 136500000,
+		.refdiv		= 0x1,
+		.fbdiv		= 0x29,
+		.frac		= 0xaf46fd,
+		.postdiv1	= 0x4,
+		.postdiv2	= 0x4,
+	},
+};
+
 static struct pistachio_pll pistachio_plls[] __initdata = {
 	PLL(CLK_MIPS_PLL, "mips_pll", "xtal", PLL_GF40LP_LAINT, 0x0,
 	    mips_pll_rates),
-	PLL_FIXED(CLK_AUDIO_PLL, "audio_pll", "audio_refclk_mux",
-		  PLL_GF40LP_FRAC, 0xc),
+	PLL(CLK_AUDIO_PLL, "audio_pll", "audio_refclk_mux", PLL_GF40LP_FRAC,
+	    0xc, audio_pll_rates),
 	PLL_FIXED(CLK_RPU_V_PLL, "rpu_v_pll", "xtal", PLL_GF40LP_LAINT, 0x20),
 	PLL_FIXED(CLK_RPU_L_PLL, "rpu_l_pll", "xtal", PLL_GF40LP_LAINT, 0x2c),
 	PLL_FIXED(CLK_SYS_PLL, "sys_pll", "xtal", PLL_GF40LP_FRAC, 0x38),
