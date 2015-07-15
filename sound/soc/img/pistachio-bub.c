@@ -755,12 +755,19 @@ static int pistachio_card_i2s_clk_notifier_cb(struct notifier_block *nb,
 {
 	struct clk_notifier_data *ndata = data;
 	struct pistachio_card_data *pbc;
+	int diff;
+	u64 tolerance;
 
 	pbc = container_of(nb, struct pistachio_card_data, i2s_clk_notifier);
 
 	switch (event) {
 	case PRE_RATE_CHANGE:
-		if (ndata->new_rate == pbc->i2s_mclk_rate) {
+		diff = abs((int)ndata->new_rate - (int)pbc->i2s_mclk_rate);
+
+		tolerance = ((u64)pbc->i2s_mclk_rate * 5) + 50;
+		do_div(tolerance, 100);
+
+		if (diff < (int)tolerance) {
 			dev_dbg(pbc->card.dev,
 				"rate change OK (%lu)\n", ndata->new_rate);
 			return NOTIFY_OK;
