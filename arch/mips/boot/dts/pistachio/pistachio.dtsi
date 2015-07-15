@@ -362,7 +362,7 @@
 			 <&clk_core CLK_AUDIO_PLL>;
 		clock-names = "sys","ref0","ref1","pll";
 		img,clk-select = <1>;
-		img,clk-rate = <12288000>;
+		img,clk-rate = <147456000>;
 	};
 
 	spfi0: spi@18100f00 {
