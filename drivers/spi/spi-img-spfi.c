@@ -445,35 +445,15 @@ static int img_spfi_unprepare(struct spi_master *master,
 static int img_spfi_setup(struct spi_device *spi)
 {
 	int ret = -EINVAL;
-	struct img_spfi_device_data *spfi_data = spi_get_ctldata(spi);
 
-	if (!spfi_data) {
-		spfi_data = kzalloc(sizeof(*spfi_data), GFP_KERNEL);
-		if (!spfi_data)
-			return -ENOMEM;
-		spfi_data->gpio_requested = false;
-		spi_set_ctldata(spi, spfi_data);
-	}
-	if (!spfi_data->gpio_requested) {
-		ret = gpio_request_one(spi->cs_gpio,
-				       (spi->mode & SPI_CS_HIGH) ?
-				       GPIOF_OUT_INIT_LOW : GPIOF_OUT_INIT_HIGH,
-				       dev_name(&spi->dev));
+	if (gpio_is_valid(spi->cs_gpio)) {
+		int mode = ((spi->mode & SPI_CS_HIGH) ?
+			     GPIOF_OUT_INIT_LOW : GPIOF_OUT_INIT_HIGH);
+
+		ret = gpio_direction_output(spi->cs_gpio, mode);
 		if (ret)
-			dev_err(&spi->dev, "can't request chipselect gpio %d\n",
-				spi->cs_gpio);
-		else
-			spfi_data->gpio_requested = true;
-	} else {
-		if (gpio_is_valid(spi->cs_gpio)) {
-			int mode = ((spi->mode & SPI_CS_HIGH) ?
-				    GPIOF_OUT_INIT_LOW : GPIOF_OUT_INIT_HIGH);
-
-			ret = gpio_direction_output(spi->cs_gpio, mode);
-			if (ret)
-				dev_err(&spi->dev, "chipselect gpio %d setup failed (%d)\n",
-					spi->cs_gpio, ret);
-		}
+			dev_err(&spi->dev, "chipselect gpio %d setup failed (%d)\n",
+				spi->cs_gpio, ret);
 	}
 	return ret;
 }
