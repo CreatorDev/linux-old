@@ -13,7 +13,7 @@
 
 / {
 	model = "IMG Marduk";
-	compatible = "img,pistachio";
+	compatible = "img,pistachio-marduk", "img,pistachio";
 
 	aliases {
 		serial0 = &uart0;
