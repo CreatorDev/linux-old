@@ -99,6 +99,7 @@
 	status = "okay";
 
 	bus-width = <4>;
+	disable-wp;
 };
 
 &ir {
