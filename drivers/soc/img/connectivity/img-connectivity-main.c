@@ -108,6 +108,7 @@ struct img_version_info img_connectivity_version(void)
 	struct img_version_info vi = { .bt = 0, .wlan = 0 };
 	return vi;
 }
+EXPORT_SYMBOL(img_connectivity_version);
 
 /*
  * *** Private API ***

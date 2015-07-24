@@ -206,7 +206,7 @@
 #define LTP_THREAD_NUM 0 /* Since, only one thread exists */
 
 /* Thread completion signature */
-#define UCCP_THRD_EXEC_SIG_OFFSET 0x00000430
+#define UCCP_THRD_EXEC_SIG_OFFSET 0x00000434
 #define UCCP_THRD_EXEC_SIG 0x00ADF00D
 
 #define MAX_LOAD_MEM_LEN 4096

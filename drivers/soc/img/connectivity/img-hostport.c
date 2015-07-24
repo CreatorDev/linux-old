@@ -31,6 +31,7 @@
 
 #include <linux/export.h>
 #include <linux/interrupt.h>
+#include <linux/jiffies.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/of.h>
@@ -43,7 +44,11 @@
 #include <linux/spinlock.h>
 #include <linux/clk.h>
 
+#include <soc/img/img-connectivity.h>
+
 #include "img-hostport.h"
+
+typedef void (*gen_handler)(void *);
 
 static struct img_hostport *module;
 static const char *hal_name = "img-hostport";
@@ -65,18 +70,70 @@ static const char *hal_name = "img-hostport";
 #define CALLEE(reg) ((reg & CALLEE_MASK) >> CALLEE_SHIFT)
 #define CALLER(reg) (reg & CALLER_MASK)
 #define USERMSG(reg) ((reg & USERMSG_MASK) >> USERMSG_SHIFT)
+#define IS_BUSY(reg) (ioread32(reg) & 0x80000000)
 #define mtx_int_en_WIDTH 4
 
-DEFINE_SEMAPHORE(host_to_uccp_core_lock);
+DEFINE_SPINLOCK(host_to_uccp_core_lock);
 
 /*
  * Forward declarations
  */
-static void notify_common(u16 user_data, int user_id);
+static void notify_common(u16 user_data, int user_id, gen_handler poke_ready,
+							void *poke_ready_arg);
 
 /*
  * Public interface procs
  */
+
+void img_transport_notify(u16 user_data, int user_id)
+{
+	img_transport_notify_callback(user_data, user_id, NULL, NULL);
+}
+EXPORT_SYMBOL(img_transport_notify);
+
+int __must_check img_transport_notify_timeout(u16 user_data,
+					int user_id,
+					long jiffies_timeout)
+{
+	return img_transport_notify_callback_timeout(user_data, user_id,
+						jiffies_timeout, NULL, NULL);
+}
+EXPORT_SYMBOL(img_transport_notify_timeout);
+
+void img_transport_notify_callback(u16 user_data,
+					int user_id,
+					gen_handler poke_ready,
+					void *poke_ready_arg)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&host_to_uccp_core_lock, flags);
+	while(IS_BUSY(H2C_CMD_ADDR(module->vbase)))
+		continue;
+	notify_common(user_data, user_id, poke_ready, poke_ready_arg);
+	spin_unlock_irqrestore(&host_to_uccp_core_lock, flags);
+}
+EXPORT_SYMBOL(img_transport_notify_callback);
+
+int __must_check img_transport_notify_callback_timeout(u16 user_data,
+					int user_id,
+					long jiffies_timeout,
+					gen_handler poke_ready,
+					void *poke_ready_arg)
+{
+	unsigned long start_time = jiffies, flags;
+	spin_lock_irqsave(&host_to_uccp_core_lock, flags);
+	while(IS_BUSY(H2C_CMD_ADDR(module->vbase))) {
+		if (time_after_eq(start_time + jiffies_timeout, jiffies)) {
+			spin_unlock_irqrestore(&host_to_uccp_core_lock, flags);
+			return -ETIME;
+		}
+	}
+
+	notify_common(user_data, user_id, poke_ready, poke_ready_arg);
+	spin_unlock_irqrestore(&host_to_uccp_core_lock, flags);
+	return 0;
+}
+EXPORT_SYMBOL(img_transport_notify_callback_timeout);
 
 int img_transport_register_callback(
 		img_transport_handler poke,
@@ -85,7 +142,7 @@ int img_transport_register_callback(
 	/*
 	 * Make sure that the slot is free, i.e. null
 	 */
-	if (client_id > MAX_ENDPOINT_ID || module->endpoints.f[client_id])
+	if (0 == client_id || client_id > MAX_ENDPOINT_ID || module->endpoints.f[client_id])
 		return -EBADSLT;
 
 	spin_lock(module->endpoints.in_use + client_id);
@@ -95,25 +152,6 @@ int img_transport_register_callback(
 	return 0;
 }
 EXPORT_SYMBOL(img_transport_register_callback);
-
-void img_transport_notify(u16 user_data, int user_id)
-{
-	down(&host_to_uccp_core_lock);
-	notify_common(user_data, user_id);
-}
-EXPORT_SYMBOL(img_transport_notify);
-
-int __must_check img_transport_notify_timeout(u16 user_data,
-					int user_id,
-					long jiffies_timeout)
-{
-	if (-ETIME == down_timeout(&host_to_uccp_core_lock, jiffies_timeout)) {
-		return -ETIME;
-	}
-	notify_common(user_data, user_id);
-	return 0;
-}
-EXPORT_SYMBOL(img_transport_notify_timeout);
 
 int img_transport_remove_callback(unsigned int client_id)
 {
@@ -138,8 +176,12 @@ static u8 id_to_field(int id)
 	return (id << 4) | id;
 }
 
-static void notify_common(u16 user_data, int user_id)
+static void notify_common(u16 user_data, int user_id, gen_handler poke_ready,
+							void *poke_ready_arg)
 {
+	dbgn("snd -- %d:%d:%02X", user_id, user_id, user_data);
+	if (poke_ready)
+		poke_ready(poke_ready_arg);
 	iowrite32(0x87 << 24 | user_data << 8 | id_to_field(user_id),
 			(void __iomem *)H2C_CMD_ADDR(module->vbase));
 }
@@ -160,54 +202,43 @@ static irqreturn_t hal_irq_handler(int    irq, void  *p)
 	first_bit = (reg_value & (1 << 31)) >> 31;
 	if (0 == first_bit) {
 		err("unexpected spurious interrupt detected!\n");
-		return IRQ_HANDLED;
+		goto exit;
 	}
 
+	callee_id = CALLEE(reg_value);
+	caller_id = CALLER(reg_value);
+	user_message = USERMSG(reg_value);
+	dbgn("rcv -- %d:%d:%02X", callee_id, caller_id, user_message);
+
+	/*
+	 * callee_id is tainted, therefore must be checked.
+	 */
+	if (callee_id > MAX_ENDPOINT_ID) {
+		errn("endpoint with id = %u doesn't exist", callee_id);
+		goto deassert;
+	}
+
+	handler = module->endpoints.f[callee_id];
+	handler_in_use = module->endpoints.in_use + callee_id;
+	if (NULL == handler) {
+		errn("endpoint with id = %u not registered", callee_id);
+		goto deassert;
+	}
+	spin_lock_irqsave(handler_in_use, flags);
+	handler((u16)user_message);
+	spin_unlock_irqrestore(handler_in_use, flags);
+
+deassert:
 	/* Clear the uccp interrupt */
 	value = 0;
 	value |= BIT(C_INT_CLR_SHIFT);
 	writel(value, (void __iomem *)(H2C_ACK_ADDR(module->vbase)));
 
-	callee_id = CALLEE(reg_value);
-	caller_id = CALLER(reg_value);
-	user_message = USERMSG(reg_value);
 	/*
-	 * We are ready to release the spinlock
-	 * once we get the all zeros message.
-	 *
-	 * callee_id is tainted, therefore must be checked.
+	 * Send ACK to the RPU
 	 */
-	if (callee_id > MAX_ENDPOINT_ID) {
-		errn("endpoint with id = %u doesn't exist", callee_id);
-		return IRQ_HANDLED;
-	}
-
-	if (COMMON_HOST_ID == callee_id) {
-		switch (user_message) {
-		case 0:
-			/*
-			 * now H2C_CMD_ADDR can
-			 * be written to again
-			 */
-			up(&host_to_uccp_core_lock);
-			break;
-		default:
-			errn("unexpected controller message, dropping :");
-			errn("\tcallee_id : %d", callee_id);
-			errn("\tcaller_id : %d", caller_id);
-			errn("\tuser_message : %d", user_message);
-		}
-	} else {
-		handler = module->endpoints.f[callee_id];
-		handler_in_use = module->endpoints.in_use + callee_id;
-		if (NULL != handler) {
-			spin_lock_irqsave(handler_in_use, flags);
-			handler((u16)user_message);
-			spin_unlock_irqrestore(handler_in_use, flags);
-		} else
-			errn("endpoint with id = %u not registered", callee_id);
-	}
-
+	img_transport_notify(0, COMMON_HOST_ID);
+exit:
 	return IRQ_HANDLED;
 }
 
@@ -219,6 +250,9 @@ static void img_hostport_irq_on(void)
 	 * Both mtx_irq and mtx_int must be asserted in order to
 	 * receive inerrupts on the host
 	 */
+
+	iowrite32(0x80000000, H2C_ACK_ADDR(module->vbase));
+	iowrite32(0x80000000, C2H_ACK_ADDR(module->vbase));
 
 	value = readl(module->vmtx_irq_en);
 	value |= BIT(C_IRQ_EN_SHIFT);
@@ -382,6 +416,9 @@ static int img_hostport_pltfr_probe(struct platform_device *pdev)
 	dbg("activating hostport interrupt");
 	img_hostport_irq_on();
 
+	dbg("releasing C2H register");
+	img_transport_notify(0, COMMON_HOST_ID);
+
 	dbg("hostport driver registration completed");
 	return result;
 
@@ -428,6 +465,12 @@ static void __exit img_hostport_leave(void)
 
 static int __init img_hostport_entry(void)
 {
+	/*
+	 * The following line is here purely to make sure that the current
+	 * module depends on img-connectivity when it's loaded as a module.
+	 */
+	 img_connectivity_version();
+
 	return platform_driver_probe(&img_uccp_driver,
 					img_hostport_pltfr_probe);
 }
