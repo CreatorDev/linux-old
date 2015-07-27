@@ -37,6 +37,7 @@
 #include <soc/img/img-connectivity.h>
 
 #include "devres-ext.h"
+#include "img-connectivity-platform.h"
 #include "img-fwldr.h"
 
 #define MOD_NAME "img-connectivity"
@@ -172,6 +173,25 @@ static int boot_cpu(struct device *d, const char *fw_name,
 	return 0;
 }
 
+static int remap_uccp_regions(struct device *d)
+{
+	module->uccp_sbus_v = devm_ioremap_resource(d, module->uccp_sbus);
+	if (IS_ERR(module->uccp_sbus_v))
+		return PTR_ERR(module->uccp_sbus_v);
+
+	module->uccp_gram_v = devm_ioremap_resource(d, module->uccp_gram);
+	if (IS_ERR(module->uccp_gram_v))
+		return PTR_ERR(module->uccp_gram_v);
+
+	return 0;
+}
+
+static void unmap_uccp_regions(struct device *d)
+{
+	devm_iounmap_resource(d, module->uccp_gram, module->uccp_gram_v);
+	devm_iounmap_resource(d, module->uccp_sbus, module->uccp_sbus_v);
+}
+
 static int img_connectivity_boot(struct platform_device *d)
 {
 	int err, t_idx;
@@ -181,16 +201,13 @@ static int img_connectivity_boot(struct platform_device *d)
 		return 0;
 	}
 
-	module->uccp_sbus_v = devm_ioremap_resource(&d->dev, module->uccp_sbus);
-	if (IS_ERR(module->uccp_sbus_v))
-		return PTR_ERR(module->uccp_sbus_v);
-
-	module->uccp_gram_v = devm_ioremap_resource(&d->dev, module->uccp_gram);
-	if (IS_ERR(module->uccp_gram_v))
-		return PTR_ERR(module->uccp_gram_v);
+	err = remap_uccp_regions(&d->dev);
+	if (err)
+		return err;
 
 	fwldr_init(module->uccp_sbus_v, module->uccp_gram_v, NULL);
 
+	soc_set_uccp_extram_base(module->uccp_sbus_v, module->scratch_bus);
 	/*
 	 * MCP code, if provided, has to be loaded first. After that it is
 	 * necessary to stop all META threads.
@@ -203,21 +220,18 @@ static int img_connectivity_boot(struct platform_device *d)
 		}
 
 		err = boot_cpu(&d->dev, mcp_ldr, mtx_threads);
-		if (err) {
+		if (err)
 			return err;
-		}
 
 		until(t_idx, mtx_threads)
 			fwldr_stop_thrd(t_idx);
 	}
 
 	err = boot_cpu(&d->dev, mtx_ldr, mtx_threads);
-	if (err) {
+	if (err)
 		return err;
-	}
 
-	devm_iounmap_resource(&d->dev, module->uccp_gram, module->uccp_gram_v);
-	devm_iounmap_resource(&d->dev, module->uccp_sbus, module->uccp_sbus_v);
+	unmap_uccp_regions(&d->dev);
 
 	return 0;
 }
