@@ -30,8 +30,16 @@
 #include <linux/slab.h>
 
 #include "img-fwldr-private.h"
+#include "mem-region.h"
 
 struct fwload_priv  *fpriv, fpv;
+
+static struct mem_region core_regions[] = {
+	{0x03000000, 0x04FFFFFF},
+	{0x02009000, 0x0203BFFF},
+	{0x80000000, 0x87FFFFFF},
+	{0xB0000000, 0xB7FFFFFF},
+};
 
 static unsigned short fwldr_read_le2(unsigned char *buf);
 static unsigned int fwldr_read_le4(unsigned char *buf);
@@ -560,29 +568,21 @@ static void fwldr_config_write(unsigned int dst_addr,
 
 static enum uccp_mem_region fwldr_chk_region(unsigned int src_addr, int len)
 {
-	unsigned int dst_addr = src_addr + len;
+	struct mem_region r;
+	r.from = src_addr;
+	r.to = src_addr + len;
 
-	if (((src_addr >= 0x03000000) && (src_addr <= 0x04FFFFFF))  ||
-	    ((src_addr >= 0x02009000) && (src_addr <= 0x0203BFFF))  ||
-	    ((src_addr >= 0x80000000) && (src_addr <= 0x87FFFFFF))) {
-		if (len != 0) {
-			if (((dst_addr >= 0x03000000) &&
-			     (dst_addr <= 0x04FFFFFF)) ||
-			    ((dst_addr >= 0x02009000) &&
-			     (dst_addr <= 0x0203BFFF)) ||
-			    ((dst_addr >= 0x80000000) &&
-			     (dst_addr <= 0x87FFFFFF)))
-				return UCCP_MEM_CORE;
-			else
-				return UCCP_MEM_ERR;
-		}
+	fwldr_dbg_info("Checking range 0x%08X - 0x%08X\n", r.from, r.to);
+	fwldr_dbg_info("\tLegal: %s\n", legal(&r) ? "yes" : "no");
+	fwldr_dbg_info("\tOverlap: %s\n", overlaps_any(core_regions, ARRAY_SIZE(core_regions), &r) ? "yes" : "no");
 
-		return UCCP_MEM_CORE;
-	} else if ((src_addr & 0xFF000000) == 0xB0000000) {
+	if (!legal(&r) || overlaps_any(core_regions, ARRAY_SIZE(core_regions), &r))
 		return UCCP_MEM_ERR;
-	} else {
+
+	if (within_any(core_regions, ARRAY_SIZE(core_regions), &r))
+		return UCCP_MEM_CORE;
+	else
 		return UCCP_MEM_DIRECT;
-	}
 }
 
 void fwldr_soft_reset(unsigned int thrd_num)
