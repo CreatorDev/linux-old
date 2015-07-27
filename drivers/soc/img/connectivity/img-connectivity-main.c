@@ -27,6 +27,7 @@
  ******************************************************************************
  *END**************************************************************************/
 #include <linux/clk.h>
+#include <linux/dma-mapping.h>
 #include <linux/firmware.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -43,6 +44,8 @@
 #define mod_info(format, ...) pr_info(MOD_NAME ": " format "\n", ##__VA_ARGS__)
 
 #define MAX_LOADERS 2
+#define MB (1024*1024)
+#define SCRATCHBUF_SIZE (4*MB)
 
 enum {
 	BOOT_OFF = 0,
@@ -86,7 +89,8 @@ module_param(mcp_ldr, charp, 0400);
 MODULE_PARM_DESC(mcp_ldr, "MCP loader binary");
 
 struct img_connectivity {
-	unsigned int mtx_threads;
+	void *scratch;
+	dma_addr_t scratch_bus;
 	unsigned char __iomem *uccp_sbus_v;
 	unsigned char __iomem *uccp_gram_v;
 	struct resource *uccp_sbus;
@@ -110,6 +114,16 @@ struct img_version_info img_connectivity_version(void)
 }
 EXPORT_SYMBOL(img_connectivity_version);
 
+struct img_scratch_info img_connectivity_scratch(void)
+{
+	struct img_scratch_info si = {
+		.virt_addr = module->scratch,
+		.bus_addr = module->scratch_bus
+	};
+	return si;
+}
+EXPORT_SYMBOL(img_connectivity_scratch);
+
 /*
  * *** Private API ***
  */
@@ -120,6 +134,11 @@ static int img_connectivity_memsetup(struct platform_device *d)
 	if (NULL == module) {
 		return -ENOMEM;
 	}
+
+	module->scratch = dmam_alloc_coherent(&d->dev, SCRATCHBUF_SIZE,
+					&module->scratch_bus, GFP_KERNEL);
+	if (NULL == module->scratch)
+		return -ENOMEM;
 
 	return 0;
 }
