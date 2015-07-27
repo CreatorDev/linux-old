@@ -34,6 +34,12 @@ struct img_version_info {
 	int wlan;
 };
 
+struct img_scratch_info {
+	void *virt_addr;
+	dma_addr_t bus_addr;
+};
+
 struct img_version_info img_connectivity_version(void);
+struct img_scratch_info img_connectivity_scratch(void);
 
 #endif /* __IMG_CONNECTIVITY_H */
