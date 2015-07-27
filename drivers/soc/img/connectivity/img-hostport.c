@@ -87,7 +87,7 @@ int img_transport_register_callback(
 	/*
 	 * Make sure that the slot is free, i.e. null
 	 */
-	if (client_id > MAX_ENDPOINT_ID || module->endpoints.f[client_id])
+	if (0 == client_id || client_id > MAX_ENDPOINT_ID || module->endpoints.f[client_id])
 		return -EBADSLT;
 
 	spin_lock(module->endpoints.in_use + client_id);
