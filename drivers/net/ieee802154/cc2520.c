@@ -35,6 +35,11 @@
 #define	CC2520_RAM_SIZE		640
 #define	CC2520_FIFO_SIZE	128
 
+#define	CC2520_CRYSTAL_FREQ		32000000
+#define	CC2520_EXTCLOCK_DEFAULT_FREQ	1000000
+#define	CC2520_EXTCLOCK_MAX_FREQ	16000000
+#define	CC2520_EXTCLOCK_MIN_FREQ	1000000
+
 #define	CC2520RAM_TXFIFO	0x100
 #define	CC2520RAM_RXFIFO	0x180
 #define	CC2520RAM_IEEEADDR	0x3EA
@@ -47,6 +52,10 @@
 #define	CC2520_STATUS_XOSC32M_STABLE	BIT(7)
 #define	CC2520_STATUS_RSSI_VALID	BIT(6)
 #define	CC2520_STATUS_TX_UNDERFLOW	BIT(3)
+
+/* extclock reg */
+#define	CC2520_EXTCLOCK_ENABLE		BIT(5)
+#define	CC2520_EXTCLOCK_MAX_DIV_FACTOR	32
 
 /* IEEE-802.15.4 defined constants (2.4 GHz logical channels) */
 #define	CC2520_MINCHANNEL		11
@@ -846,10 +855,15 @@ static int cc2520_get_platform_data(struct spi_device *spi,
 	pdata->cca = of_get_named_gpio(np, "cca-gpio", 0);
 	pdata->vreg = of_get_named_gpio(np, "vreg-gpio", 0);
 	pdata->reset = of_get_named_gpio(np, "reset-gpio", 0);
-
 	/* CC2591 front end for CC2520 */
 	if (of_property_read_bool(np, "amplified"))
 		priv->amplified = true;
+	if (of_property_read_u32(np, "extclock-freq", &pdata->extclockfreq)) {
+		/* if extclock-freq is not specified,
+		 * default to 1MHz(reset value)
+		 */
+		pdata->extclockfreq = CC2520_EXTCLOCK_DEFAULT_FREQ;
+	}
 
 	return 0;
 }
@@ -860,6 +874,7 @@ static int cc2520_hw_init(struct cc2520_private *priv)
 	int ret;
 	int timeout = 100;
 	struct cc2520_platform_data pdata;
+	u8 extclock_reg;
 
 	ret = cc2520_get_platform_data(priv->spi, &pdata);
 	if (ret)
@@ -970,6 +985,27 @@ static int cc2520_hw_init(struct cc2520_private *priv)
 	ret = cc2520_write_register(priv, CC2520_FIFOPCTRL, 127);
 	if (ret)
 		goto err_ret;
+
+	/* Configure EXTCLOCK register based on 'extclock-freq' property */
+	if (pdata.extclockfreq == 0) {
+		extclock_reg = 0;
+	} else if (pdata.extclockfreq >= CC2520_EXTCLOCK_MIN_FREQ &&
+		   pdata.extclockfreq <= CC2520_EXTCLOCK_MAX_FREQ) {
+		extclock_reg = (CC2520_EXTCLOCK_ENABLE |
+			       (CC2520_EXTCLOCK_MAX_DIV_FACTOR -
+			       (DIV_ROUND_CLOSEST(CC2520_CRYSTAL_FREQ,
+						  pdata.extclockfreq))));
+	} else {
+		dev_err(&priv->spi->dev, "Invalid value specified for 'extclock-freq'\n");
+		ret = -EINVAL;
+		goto err_ret;
+	}
+
+	ret = cc2520_write_register(priv, CC2520_EXTCLOCK, extclock_reg);
+	if (ret) {
+		dev_err(&priv->spi->dev, "Failed to write 'extclock-freq' into CC2520_EXTCLOCK\n");
+		goto err_ret;
+	}
 
 	return 0;
 
