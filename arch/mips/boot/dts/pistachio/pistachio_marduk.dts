@@ -75,15 +75,13 @@
 			};
 		};
 
-		/* EXT clock from cc2520 is fed to sc16is752,
-		cc2520 driver is not modifying the clock and
-		on reset cc2520 starts with 1Mhz EXT clock */
-		cc2520_ext_clk: cc2520-ext-clk {
-			compatible = "fixed-clock";
-			#clock-cells = <0>;
-			clock-frequency = <1000000>;
-			clock-output-names = "cc2520_ext_clock";
-        };
+	/* EXT clock from cc2520 is fed to sc16is752 */
+	cc2520_ext_clk: cc2520-ext-clk {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <16000000>;
+		clock-output-names = "cc2520_ext_clock";
+	};
 };
 
 &spfi0 {
@@ -103,6 +101,7 @@
 		cca-gpio = <&gpio3 6 GPIO_ACTIVE_HIGH>;
 		vreg-gpio = <&gpio2 12 GPIO_ACTIVE_HIGH>;
 		reset-gpio = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+		extclock-freq = <16000000>;
 	};
 
 	sc16is752@1 {
