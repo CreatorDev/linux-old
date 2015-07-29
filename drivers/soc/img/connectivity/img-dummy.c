@@ -37,6 +37,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 
+#include <soc/img/img-connectivity.h>
 #include <soc/img/img-transport.h>
 
 #define FIVE_S (5 * HZ)
@@ -98,7 +99,18 @@ void received_message(u16 user_data)
 static int __init img_dummy_probe(struct platform_device *d)
 {
 	int result;
-	struct proc_dir_entry *entry = proc_create("hsdummy", 0600, NULL, &ops);
+	struct proc_dir_entry *entry;
+	struct img_scratch_info si;
+
+	/*
+	 * This is how you can get hold of the pointer to an auxiliary,
+	 * physically contiguous buffer.
+	 * si.virt_addr is the address you most probably want to use.
+	 */
+	si = img_connectivity_scratch();
+	(void)si;
+
+	entry = proc_create("hsdummy", 0600, NULL, &ops);
 	if (IS_ERR_OR_NULL(entry)) {
 		result = PTR_ERR(entry);
 		goto proc_create_failed;
