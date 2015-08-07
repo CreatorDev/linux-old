@@ -24,12 +24,17 @@ Required properties:
 	"sys"	The system clock
 	"ref0"	Reference clock 0
 	"ref1"	Reference clock 1
-
-		If ATU (in adjustable pll mode) is to be used, the
-		following is required:
 	"pll"	Audio PLL
 
   - img,clk-select : Reference select
+
+  - img,cr-periph : phandle of the peripheral control syscon node which
+		    contains the event timer external source bank select
+		    register
+
+  - img,ext-src-bank : GPIO bank selection for external source. For this source
+		       to function correctly, no other input gpios must be used
+		       within the selected GPIO bank
 
 Optional properties:
 
@@ -48,8 +53,11 @@ event_timer: event_timer@18102300 {
 		     <GIC_SHARED 56 IRQ_TYPE_LEVEL_HIGH>,
 		     <GIC_SHARED 57 IRQ_TYPE_LEVEL_HIGH>;
 	#clock-cells = <0>;
-	clocks = <&clk_core SYS_CLK_EVENT_TIMER &clk_core CLK_AUDIO &clk_core CLK_EVENT_TIMER>;
-	clock-names = "sys","ref0","ref1";
+	clocks = <&clk_core SYS_CLK_EVENT_TIMER>,
+		 <&clk_core CLK_AUDIO>,
+		 <&clk_core CLK_EVENT_TIMER>,
+		 <&clk_core CLK_AUDIO_PLL>;
+	clock-names = "sys","ref0","ref1", "pll";
 	img,clk-select = <1>;
 	img,clk-rate = <12288000>;
 };
