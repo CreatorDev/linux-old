@@ -1,7 +1,7 @@
 /*
- * Pistachio Bring-Up Board audio card driver
+ * Pistachio audio card driver
  *
- * Copyright (C) 2014 Imagination Technologies Ltd.
+ * Copyright (C) 2015 Imagination Technologies Ltd.
  *
  * Author: Damien Horsley <Damien.Horsley@imgtec.com>
  *
@@ -10,322 +10,551 @@
  * version 2, as published by the Free Software Foundation.
  */
 
-//#define	DEBUG
-//#define	VERBOSE_DEBUG
-
 #include <linux/clk.h>
-#include <linux/delay.h>
 #include <linux/device.h>
 #include <linux/module.h>
+#include <linux/notifier.h>
 #include <linux/of_gpio.h>
-#include <linux/platform_device.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
+#include <linux/regmap.h>
 
 #include <linux/mfd/syscon.h>
-#include <linux/regmap.h>
 
 #include <sound/jack.h>
 #include <sound/soc.h>
-
-#include "../codecs/tpa6130a2.h"
 
 #include <dt-bindings/sound/pistachio-bub-audio.h>
 
 #include "pistachio-event-timer.h"
 
-extern void snd_pcm_startat_register(struct snd_pcm_substream *substream,
-	int clock_class, int clock_type, const struct timespec *start_time,
-	void *data);
-void snd_pcm_startat_unregister(struct snd_pcm_substream *substream);
+#define	PLL_RATE_8000_16000_32000_48000_96000_192000	147456000
+#define	PLL_RATE_11025_22050_44100_64000_88200_176400	135475200
+#define	PISTACHIO_MAX_DIV				256
+#define	PISTACHIO_MIN_MCLK_FREQ				(135475200 / 256)
 
-#define PISTACHIO_LINK_SPDIF_OUT	0
-#define PISTACHIO_LINK_SPDIF_IN		1
-#define PISTACHIO_LINK_PRL_OUT		2
-#define PISTACHIO_LINK_I2S_OUT		3
-#define PISTACHIO_LINK_I2S_IN		4
+#define	PISTACHIO_CLOCK_MASTER_EXT	-1
+#define	PISTACHIO_CLOCK_MASTER_LOOPBACK	-2
 
-#define PISTACHIO_CODEC_TPA6130A2	0
-#define PISTACHIO_CODEC_PCM3060_DAC	1
-#define PISTACHIO_CODEC_PCM3060_ADC	2
-#define PISTACHIO_CODEC_PCM3168A_1_DAC	3
-#define PISTACHIO_CODEC_PCM3168A_1_ADC	4
-#define PISTACHIO_CODEC_PCM3168A_2_DAC	5
-#define PISTACHIO_CODEC_PCM3168A_2_ADC	6
-#define PISTACHIO_CPU_I2S_OUT		7
-#define PISTACHIO_FRAME_EXTERNAL	8
+#define	PISTACHIO_MAX_I2S_CODECS	12
 
-#define PISTACHIO_MAX_LINKS		5
+#define	PISTACHIO_MAX_FS_RATES	20
 
-#define PISTACHIO_MAX_CODECS		7
-#define PISTACHIO_MAX_CODEC_DT_NODES	4
+#define	PISTACHIO_I2S_MCLK_MAX_FREQ	200000000
+#define	PISTACHIO_DAC_MCLK_MAX_FREQ	200000000
 
-static const unsigned int pistachio_clk_ratios[] = {
-	768,
-	512,
-	384,
-	256,
-	192,
-	128
+#define	PISTACHIO_INTERNAL_DAC_PREFIX	"internal-dac"
+
+#define PISTACHIO_I2S_LOOPBACK_REG		0x88
+#define PISTACHIO_I2S_LOOPBACK_CLK_MASK		0x3
+#define PISTACHIO_I2S_LOOPBACK_CLK_SHIFT	0
+
+#define PISTACHIO_I2S_LOOPBACK_CLK_NONE		0
+#define PISTACHIO_I2S_LOOPBACK_CLK_MFIO		1
+#define PISTACHIO_I2S_LOOPBACK_CLK_LOCAL	2
+
+struct pistachio_start_at {
+	enum pistachio_evt_enable enable;
+	spinlock_t lock;
+	struct snd_pcm_substream *substream;
+	unsigned int dummy_frames;
 };
 
-#define PCM1368A_PCM3060_MAX_MCLK			36864000
-#define PCM3168A_PCM3060_NUM_MCLK_RATIOS_DAC		6
-#define PCM3168A_PCM3060_NUM_MCLK_RATIOS_ADC		4
-#define PISTACHIO_I2S_MCLK_RATIO_START			2
-#define PISTACHIO_I2S_MCLK_NUM_RATIOS			2
+struct pistachio_output {
+	struct pistachio_start_at start_at;
+	unsigned int active_rate;
+};
 
-struct pistachio_codec {
-	unsigned int fmt;
+struct pistachio_parallel_out {
+	struct pistachio_output output;
+	struct snd_soc_dai_link_component internal_dac;
+};
+
+struct pistachio_mclk {
+	struct clk *mclk;
+	unsigned int cur_rate;
+	unsigned int min_rate;
+	unsigned int max_rate;
+};
+
+struct pistachio_i2s_mclk {
+	struct pistachio_mclk *mclk;
+	unsigned int *fs_rates;
+	unsigned int num_fs_rates;
+};
+
+struct pistachio_codec_i2s {
+	struct pistachio_mclk *mclk;
 	struct snd_soc_dai *dai;
-	struct device_node *np;
+	unsigned int mclk_index;
 };
 
-struct pistachio_card_data {
+struct pistachio_i2s {
+	struct pistachio_i2s_mclk mclk_a;
+	struct pistachio_i2s_mclk mclk_b;
+	struct pistachio_codec_i2s *codecs;
+	struct snd_soc_dai_link_component *components;
+	unsigned int num_codecs;
+};
+
+struct pistachio_i2s_out {
+	struct pistachio_i2s i2s;
+	struct pistachio_output output;
+	struct device *cpu_dev;
+};
+
+struct pistachio_i2s_in {
+	struct pistachio_i2s i2s;
+	unsigned int active_rate;
+	unsigned int fmt;
+	int frame_master;
+	int bitclock_master;
+	struct device *cpu_dev;
+};
+
+struct pistachio_i2s_codec_info_s {
+	const char *prefix;
+	const char *dai_name;
+	struct device_node *np;
+	struct pistachio_mclk *mclk;
+	unsigned int mclk_index;
+};
+
+struct pistachio_i2s_codec_info {
+	unsigned int total_codecs;
+	unsigned int unique_codecs;
+	int bitclock_master_idx;
+	int frame_master_idx;
+	struct pistachio_i2s_codec_info_s codecs[PISTACHIO_MAX_I2S_CODECS];
+};
+
+struct pistachio_i2s_mclk_fs_info {
+	unsigned int fs_rates[PISTACHIO_MAX_FS_RATES];
+	unsigned int num_fs_rates;
+};
+
+struct pistachio_card {
+	struct pistachio_output *spdif_out;
+	struct pistachio_parallel_out *parallel_out;
+	struct pistachio_i2s_out *i2s_out;
+	struct pistachio_i2s_in *i2s_in;
+	bool spdif_in;
+	struct device_node *event_timer_np;
+	struct pistachio_evt *event_timer;
 	struct snd_soc_card card;
-	struct snd_soc_dai_link dai_links_st[PISTACHIO_MAX_LINKS];
-	struct snd_soc_dai_link *dai_links[PISTACHIO_MAX_LINKS];
-	struct snd_soc_dai_link_component codec_st[PISTACHIO_MAX_CODECS];
-	struct snd_soc_codec_conf codec_conf[PISTACHIO_MAX_CODEC_DT_NODES];
-	struct pistachio_codec codecs[PISTACHIO_MAX_CODECS];
-	unsigned int i2s_out_cpu_fmt;
-	unsigned int i2s_in_cpu_fmt;
 	struct snd_soc_jack hp_jack;
 	struct snd_soc_jack_pin hp_jack_pin;
 	struct snd_soc_jack_gpio hp_jack_gpio;
-	unsigned int i2s_out_master;
-	unsigned int i2s_in_master;
-	spinlock_t spdif_out_lock;
-	unsigned int spdif_out_active_rate;
-	struct snd_pcm_substream *spdif_out_start_at_substream;
-	spinlock_t parallel_out_lock;
-	unsigned int parallel_out_active_rate;
-	struct snd_pcm_substream *parallel_out_start_at_substream;
-	spinlock_t i2s_out_lock;
-	unsigned int i2s_out_active_rate;
-	struct snd_pcm_substream *i2s_out_start_at_substream;
-	unsigned int i2s_in_active_rate;
+	unsigned int mute_gpio;
+	bool mute_gpio_inverted;
+	struct mutex rate_mutex;
 	struct clk *audio_pll;
-	unsigned long audio_pll_rate;
-	struct clk *i2s_mclk;
-	unsigned long i2s_mclk_rate;
-	u32 db;
-	u32 mclk_source;
-	struct clk *dac_clk;
-	unsigned long dac_clk_rate;
-	struct clk *evt_clk;
-	unsigned long evt_clk_rate;
-	u32 mclk_max;
+	unsigned int audio_pll_rate;
+	struct pistachio_mclk i2s_mclk;
+	struct pistachio_mclk dac_mclk;
 	struct regmap *periph_regs;
-	struct regmap *top_regs;
 	struct notifier_block i2s_clk_notifier;
-	struct platform_device *event_timer;
-
+	struct snd_ctl_elem_id *sample_rate_ids[PISTACHIO_EVT_MAX_SOURCES];
+	struct snd_ctl_elem_id *phase_difference_id;
 };
 
-int pistachio_card_get_best_clk_rate(struct pistachio_card_data *pbc,
-		long rate, bool is_mclk, unsigned int ratios_start,
-		unsigned int num_ratios, long cur_rate,
-		unsigned long *new_clk_rate)
+static void pistachio_card_set_mclk_codecs(struct pistachio_i2s *i2s,
+			struct pistachio_mclk *mclk, unsigned int rate)
 {
 	int i;
-	long pre_div_rate, temp, diff, best_diff = LONG_MAX;
-	unsigned long best_pre_div_rate, clk_max;
-	bool change = false;
-	struct device *dev = pbc->card.dev;
+	struct pistachio_codec_i2s *codec;
 
-	clk_max = (is_mclk) ? pbc->mclk_max : ULONG_MAX;
-
-	dev_dbg(dev, "pistachio_card_get_best_clk_rate()\n");
-	dev_dbg(dev, "clk_ratios_start %u num_clk_ratios %u\n",
-		ratios_start, num_ratios);
-
-	for (i = ratios_start; i < (ratios_start + num_ratios); i++) {
-		temp = cur_rate / pistachio_clk_ratios[i];
-		diff = abs(temp - rate);
-		if (!diff)
-			break;
-		if (diff < best_diff)
-			best_diff = diff;
+	for (i = 0; i < i2s->num_codecs; i++) {
+		codec = &i2s->codecs[i];
+		if (codec->mclk == mclk) {
+			snd_soc_dai_set_sysclk(codec->dai, codec->mclk_index,
+						rate, SND_SOC_CLOCK_IN);
+		}
 	}
+}
 
-	if (i != (ratios_start + num_ratios)) {
-		dev_dbg(dev, "current clk rate is optimal (zero diff)\n");
-		return 0;
-	}
+static int pistachio_card_set_mclk(struct pistachio_card *pbc,
+		struct pistachio_mclk *mclk, unsigned int rate)
+{
+	int ret;
+	unsigned int old_rate = mclk->cur_rate;
 
-	dev_dbg(dev, "current clk rate may not be optimal, checking...\n");
-
-	for (i = ratios_start; i < (ratios_start + num_ratios); i++) {
-		pre_div_rate = rate * pistachio_clk_ratios[i];
-		temp = (pbc->audio_pll_rate + (pre_div_rate / 2)) / pre_div_rate;
-		if(temp > 256)
-			temp = 256;
-		pre_div_rate = (pbc->audio_pll_rate + (temp / 2)) / temp;
-
-		diff = abs((pre_div_rate / pistachio_clk_ratios[i]) - rate);
-		if ((diff < best_diff) && (pre_div_rate <= clk_max)) {
-			best_diff = diff;
-			best_pre_div_rate = pre_div_rate;
-			change = true;
+	if (mclk->cur_rate != rate) {
+		/*
+		 * Set cur_rate before the clk_set_rate call to stop the i2s
+		 * mclk rate change callback rejecting the change
+		 */
+		mclk->cur_rate = rate;
+		ret = clk_set_rate(mclk->mclk, rate);
+		if (ret) {
+			mclk->cur_rate = old_rate;
+			return ret;
 		}
 	}
 
-	if (!change) {
-		dev_dbg(dev, "current clk rate is optimal (diff %ld)\n",
-			best_diff);
-		return 0;
-	}
+	if (pbc->i2s_out)
+		pistachio_card_set_mclk_codecs(&pbc->i2s_out->i2s, mclk, rate);
 
-	dev_dbg(dev, "New clk rate %lu (diff %ld)\n",
-		best_pre_div_rate, best_diff);
+	if (pbc->i2s_in)
+		pistachio_card_set_mclk_codecs(&pbc->i2s_in->i2s, mclk, rate);
 
-	*new_clk_rate = best_pre_div_rate;
-
-	return 1;
+	return 0;
 }
 
-int pistachio_card_update_codec_sysclks(struct pistachio_card_data *pbc,
-				unsigned long new_rate)
+static int pistachio_card_set_pll_rate(struct pistachio_card *pbc,
+					unsigned int rate)
 {
-	struct pistachio_codec *codec;
+	int ret;
+	unsigned int old_i2s_rate;
+
+	/*
+	 * If any active streams are currently using a clock derived
+	 * from the audio pll, a pll rate change cannot take place
+	 */
+	if ((pbc->spdif_out && pbc->spdif_out->active_rate) ||
+	(pbc->parallel_out && pbc->parallel_out->output.active_rate) ||
+	(pbc->i2s_out && pbc->i2s_out->output.active_rate) ||
+	(pbc->i2s_in && pbc->i2s_in->active_rate &&
+	pbc->i2s_in->i2s.mclk_a.mclk))
+		return -EBUSY;
+
+	/*
+	 * Set cur_rate before the clk_set_rate call to stop the i2s
+	 * mclk rate change callback rejecting the change
+	 */
+	old_i2s_rate = pbc->i2s_mclk.cur_rate;
+	pbc->i2s_mclk.cur_rate = rate / (pbc->audio_pll_rate / old_i2s_rate);
+
+	ret = clk_set_rate(pbc->audio_pll, rate);
+
+	if (ret) {
+		pbc->i2s_mclk.cur_rate = old_i2s_rate;
+	} else {
+		pbc->audio_pll_rate = rate;
+		pbc->dac_mclk.cur_rate = rate / (pbc->audio_pll_rate /
+						 pbc->dac_mclk.cur_rate);
+		pistachio_card_set_mclk(pbc, &pbc->i2s_mclk,
+				pbc->i2s_mclk.cur_rate);
+		pistachio_card_set_mclk(pbc, &pbc->dac_mclk,
+				pbc->dac_mclk.cur_rate);
+	}
+
+	return ret;
+}
+
+static void pistachio_card_rate_err(struct pistachio_card *pbc,
+	struct pistachio_i2s_mclk *mclk_a, struct pistachio_i2s_mclk *mclk_b,
+	unsigned int rate_a, unsigned int rate_b)
+{
+	char *mclk_name, *dir_a, *dir_b;
+
+	if (mclk_a->mclk == &pbc->i2s_mclk)
+		mclk_name = "i2s";
+	else
+		mclk_name = "dac";
+
+	if (pbc->i2s_out && ((mclk_a == &pbc->i2s_out->i2s.mclk_a) ||
+			(mclk_a == &pbc->i2s_out->i2s.mclk_b))) {
+		dir_a = "I2S out";
+		dir_b = "I2S in";
+	} else {
+		dir_a = "I2S in";
+		dir_b = "I2S out";
+	}
+
+	if (!mclk_b) {
+		dev_err(pbc->card.dev,
+			"No valid rate for mclk %s (%s sample rate %u)\n",
+			mclk_name, dir_a, rate_a);
+	} else {
+		dev_err(pbc->card.dev,
+			"No valid rate for mclk %s (%s sample rate %u, %s sample rate %u)\n",
+			mclk_name, dir_a, rate_a, dir_b, rate_b);
+	}
+}
+
+static int pistachio_card_get_optimal_mclk_rate(struct pistachio_card *pbc,
+	struct pistachio_i2s_mclk *mclk_a, struct pistachio_i2s_mclk *mclk_b,
+	unsigned int rate_a, unsigned int rate_b, unsigned int *p_mclk_rate)
+{
+	int i, j;
+	unsigned int div, total_div, mclk_rate;
+
+	/*
+	 * If the current system clock rate has zero difference, do not
+	 * change the rate. This ensures a rate set using the "I2S Rates"
+	 * control will not be erroneously overridden by a hw_params call
+	 */
+	for (i = 0; i < mclk_a->num_fs_rates; i++)
+		if ((mclk_a->mclk->cur_rate / mclk_a->fs_rates[i]) == rate_a)
+			break;
+	if (i != mclk_a->num_fs_rates) {
+		if (mclk_b) {
+			for (i = 0; i < mclk_b->num_fs_rates; i++)
+				if ((mclk_b->mclk->cur_rate /
+						mclk_b->fs_rates[i]) == rate_b)
+					break;
+			if (i != mclk_b->num_fs_rates) {
+				*p_mclk_rate = mclk_a->mclk->cur_rate;
+				return 0;
+			}
+		} else {
+			*p_mclk_rate = mclk_a->mclk->cur_rate;
+			return 0;
+		}
+	}
+
+	total_div = pbc->audio_pll_rate / rate_a;
+
+	for (i = 0; i < mclk_a->num_fs_rates; i++) {
+		div = total_div / mclk_a->fs_rates[i];
+		if (div > PISTACHIO_MAX_DIV)
+			continue;
+		mclk_rate = pbc->audio_pll_rate / div;
+		if ((mclk_rate < mclk_a->mclk->min_rate) ||
+				(mclk_rate > mclk_a->mclk->max_rate))
+			continue;
+		if ((rate_a * mclk_a->fs_rates[i] * div) != pbc->audio_pll_rate)
+			continue;
+
+		if (!mclk_b)
+			break;
+
+		for (j = 0; j < mclk_b->num_fs_rates; j++) {
+			if ((rate_b * mclk_b->fs_rates[j] * div) ==
+					pbc->audio_pll_rate)
+				break;
+		}
+		if (j != mclk_b->num_fs_rates)
+			break;
+	}
+
+	if (i == mclk_a->num_fs_rates) {
+		pistachio_card_rate_err(pbc, mclk_a, mclk_b, rate_a, rate_b);
+		return -EINVAL;
+	}
+
+	*p_mclk_rate = mclk_rate;
+
+	return 0;
+}
+
+static bool pistachio_card_mclk_active(struct pistachio_card *pbc,
+					struct pistachio_mclk *mclk)
+{
+	if (pbc->i2s_out && pbc->i2s_out->output.active_rate) {
+		if (pbc->i2s_out->i2s.mclk_a.mclk == mclk)
+			return true;
+		if (pbc->i2s_out->i2s.mclk_b.mclk == mclk)
+			return true;
+	}
+
+	if (pbc->i2s_in && pbc->i2s_in->active_rate) {
+		if (pbc->i2s_in->i2s.mclk_a.mclk == mclk)
+			return true;
+		if (pbc->i2s_in->i2s.mclk_b.mclk == mclk)
+			return true;
+	}
+
+	return false;
+}
+
+static int pistachio_card_update_mclk(struct pistachio_card *pbc,
+	struct pistachio_i2s_mclk *mclk_a, struct pistachio_i2s_mclk *mclk_b,
+	unsigned int rate_a, unsigned int rate_b)
+{
+	unsigned int mclk_rate;
 	int ret;
 
-	codec = &pbc->codecs[PISTACHIO_CODEC_PCM3060_DAC];
-	if (codec->dai) {
-		ret = snd_soc_dai_set_sysclk(codec->dai, 0, new_rate, 0);
-		if (ret)
-			return ret;
-	}
+	ret = pistachio_card_get_optimal_mclk_rate(pbc, mclk_a, mclk_b, rate_a,
+							rate_b, &mclk_rate);
+	if (ret)
+		return ret;
 
-	codec = &pbc->codecs[PISTACHIO_CODEC_PCM3060_ADC];
-	if (codec->dai) {
-		ret = snd_soc_dai_set_sysclk(codec->dai, 0, new_rate, 0);
-		if (ret)
-			return ret;
-	}
-
-	codec = &pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_DAC];
-	if (!codec->dai)
-		codec = &pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_ADC];
-	if (codec->dai) {
-		ret = snd_soc_dai_set_sysclk(codec->dai, 0, new_rate, 0);
-		if (ret)
-			return ret;
-	}
-
-	codec = &pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_DAC];
-	if (!codec->dai)
-		codec = &pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_ADC];
-	if (codec->dai) {
-		ret = snd_soc_dai_set_sysclk(codec->dai, 0, new_rate, 0);
-		if (ret)
-			return ret;
+	if (mclk_a->mclk->cur_rate != mclk_rate) {
+		if (pistachio_card_mclk_active(pbc, mclk_a->mclk))
+			return -EBUSY;
+		return pistachio_card_set_mclk(pbc, mclk_a->mclk, mclk_rate);
 	}
 
 	return 0;
 }
 
-int pistachio_card_set_dac_clk(struct pistachio_card_data *pbc,
-				long rate, bool dac)
+static int pistachio_card_update_mclk_single(struct pistachio_card *pbc,
+		struct pistachio_i2s_mclk *mclk, unsigned int rate)
 {
-	int num_ratios, ret;
-	unsigned long new_rate;
+	return pistachio_card_update_mclk(pbc, mclk, NULL, rate, 0);
+}
 
-	num_ratios = (dac) ? (PCM3168A_PCM3060_NUM_MCLK_RATIOS_DAC) :
-			(PCM3168A_PCM3060_NUM_MCLK_RATIOS_ADC);
-
-	ret = pistachio_card_get_best_clk_rate(pbc, rate, true, 0, num_ratios,
-			pbc->dac_clk_rate, &new_rate);
-	if (ret <= 0)
-		return ret;
-
-	if (dac && pbc->i2s_in_active_rate) {
-		dev_dbg(pbc->card.dev,
-			"Cannot change dclk rate, i2s in active\n");
-		return -EINVAL;
-	} else if (!dac && pbc->i2s_out_active_rate) {
-		dev_dbg(pbc->card.dev,
-			"Cannot change dclk rate, i2s out active\n");
+static inline int pistachio_card_get_pll_rate(unsigned int rate)
+{
+	switch (rate) {
+	case 8000:
+	case 16000:
+	case 32000:
+	case 48000:
+	case 96000:
+	case 192000:
+		return PLL_RATE_8000_16000_32000_48000_96000_192000;
+	case 11025:
+	case 22050:
+	case 44100:
+	case 64000:
+	case 88200:
+	case 176400:
+		return PLL_RATE_11025_22050_44100_64000_88200_176400;
+	default:
 		return -EINVAL;
 	}
+}
 
-	ret = clk_set_rate(pbc->dac_clk, new_rate);
+static int _pistachio_card_change_rate(struct pistachio_card *pbc,
+			unsigned int rate, struct pistachio_i2s *i2s)
+{
+	int ret = 0;
+	unsigned int pll_rate;
+
+	ret = pistachio_card_get_pll_rate(rate);
+	if (ret < 0)
+		return ret;
+
+	pll_rate = ret;
+
+	if (pbc->audio_pll_rate != pll_rate) {
+		ret = pistachio_card_set_pll_rate(pbc, pll_rate);
+		if (ret)
+			return ret;
+	}
+
+	/*
+	 * Nothing more to do if an mclk is not used. The individual
+	 * cpu-dai drivers will make the required clock changes
+	 */
+	if (!i2s)
+		return 0;
+
+	ret = pistachio_card_update_mclk_single(pbc, &i2s->mclk_a, rate);
 	if (ret)
 		return ret;
 
-	pbc->dac_clk_rate = new_rate;
+	if (!i2s->mclk_b.mclk)
+		return 0;
 
-	return pistachio_card_update_codec_sysclks(pbc, new_rate);
+	return pistachio_card_update_mclk_single(pbc, &i2s->mclk_b, rate);
 }
 
-#define CR_AUDIO_DAC_CTRL		0x40
-#define CR_AUDIO_DAC_CTRL_MUTE_MASK	0x4
-#define CR_AUDIO_DAC_CTRL_PWR_SEL_MASK	0x2
-#define CR_AUDIO_DAC_CTRL_PWR_MASK	0x1
-
-#define CR_AUDIO_DAC_RESET		0x44
-#define CR_AUDIO_DAC_RESET_SR_MASK	0x1
-
-#define CR_AUDIO_DAC_GTI_CTRL			0x48
-#define CR_AUDIO_DAC_GTI_CTRL_ADDR_SHIFT	0
-#define CR_AUDIO_DAC_GTI_CTRL_ADDR_MASK		0xFFF
-#define CR_AUDIO_DAC_GTI_CTRL_WE_MASK		0x1000
-#define CR_AUDIO_DAC_GTI_CTRL_WDATA_SHIFT	13
-#define CR_AUDIO_DAC_GTI_CTRL_WDATA_MASK	0x1FE000
-
-#define CR_AUDIO_DAC_GTI_OUT			0x4C
-#define CR_AUDIO_DAC_GTI_OUT_RDATA_SHIFT	0
-#define CR_AUDIO_DAC_GTI_OUT_RDATA_MASK		0xFF
-
-static int pistachio_card_prl_out_link_init(struct snd_soc_pcm_runtime *rtd)
+static int pistachio_card_change_rate(struct pistachio_card *pbc,
+			unsigned int rate, struct pistachio_i2s *i2s,
+			unsigned int *active_rate)
 {
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
 	int ret;
-	struct pistachio_codec *pc;
 
-	pc = &pbc->codecs[PISTACHIO_CODEC_TPA6130A2];
-
-	if (pc->np && (pc->np == rtd->codec_dais[0]->dev->of_node)) {
-		pc->dai = rtd->codec_dais[0];
-
-		ret = tpa6130a2_stereo_enable(pc->dai->codec, 1);
-	}
-
-	regmap_update_bits(pbc->top_regs, CR_AUDIO_DAC_CTRL,
-			CR_AUDIO_DAC_CTRL_PWR_MASK, 1);
-
-	msleep(10);
-
-	regmap_update_bits(pbc->top_regs, CR_AUDIO_DAC_GTI_CTRL,
-			CR_AUDIO_DAC_GTI_CTRL_ADDR_MASK,
-			1 << CR_AUDIO_DAC_GTI_CTRL_ADDR_SHIFT);
-
-	regmap_update_bits(pbc->top_regs, CR_AUDIO_DAC_GTI_CTRL,
-			CR_AUDIO_DAC_GTI_CTRL_WDATA_MASK,
-			1 << CR_AUDIO_DAC_GTI_CTRL_WDATA_SHIFT);
-
-	regmap_update_bits(pbc->top_regs, CR_AUDIO_DAC_GTI_CTRL,
-			CR_AUDIO_DAC_GTI_CTRL_WE_MASK,
-			CR_AUDIO_DAC_GTI_CTRL_WE_MASK);
-
-	regmap_update_bits(pbc->top_regs, CR_AUDIO_DAC_GTI_CTRL,
-			CR_AUDIO_DAC_GTI_CTRL_WE_MASK, 0);
-
-	regmap_update_bits(pbc->top_regs, CR_AUDIO_DAC_CTRL,
-			CR_AUDIO_DAC_CTRL_PWR_MASK, 0);
+	mutex_lock(&pbc->rate_mutex);
+	ret = _pistachio_card_change_rate(pbc, rate, i2s);
+	if (!ret)
+		*active_rate = rate;
+	mutex_unlock(&pbc->rate_mutex);
 
 	return ret;
 }
 
-static int pistachio_card_parallel_out_startup(struct snd_pcm_substream *st)
+static void pistachio_card_start_at_cb(struct pistachio_evt *evt,
+					void *context)
 {
-	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
+	struct pistachio_start_at *sa = context;
 	unsigned long flags;
 
-	spin_lock_irqsave(&pbc->parallel_out_lock, flags);
-	pbc->parallel_out_active_rate = 0;
-	spin_unlock_irqrestore(&pbc->parallel_out_lock, flags);
+	spin_lock_irqsave(&sa->lock, flags);
+
+	if (!sa->substream) {
+		spin_unlock_irqrestore(&sa->lock, flags);
+		return;
+	}
+
+	snd_pcm_start_at_trigger(sa->substream);
+
+	_pistachio_evt_disable_event(evt, sa->enable);
+
+	sa->substream = NULL;
+
+	spin_unlock_irqrestore(&sa->lock, flags);
+}
+
+static int pistachio_card_start_at(struct pistachio_output *output,
+		struct pistachio_evt *evt, struct snd_pcm_substream *st,
+		const struct timespec *ts)
+{
+	int ret;
+	unsigned long flags;
+	struct timespec ts_sub, ts_new;
+	struct pistachio_start_at *sa = &output->start_at;
+	u64 temp;
+
+	/* Adjust start time to account for dummy frames output at start */
+	temp = (u64)NSEC_PER_SEC * sa->dummy_frames;
+	ts_sub.tv_sec = 0;
+	ts_sub.tv_nsec = DIV_ROUND_CLOSEST_ULL(temp, output->active_rate);
+	ts_new = timespec_sub(*ts, ts_sub);
+
+	spin_lock_irqsave(&sa->lock, flags);
+
+	ret = pistachio_evt_set_event(evt, sa->enable,
+		PISTACHIO_EVT_TYPE_LEVEL, &ts_new,
+		pistachio_card_start_at_cb, sa);
+	if (!ret)
+		sa->substream = st;
+
+	spin_unlock_irqrestore(&sa->lock, flags);
+
+	return ret;
+}
+
+static int pistachio_card_start_at_abort(struct pistachio_start_at *sa,
+		struct pistachio_evt *evt, struct snd_pcm_substream *st)
+{
+	unsigned long flags;
+
+	if (spin_trylock_irqsave(&sa->lock, flags)) {
+		if (!sa->substream) {
+			/* Already started */
+			spin_unlock_irqrestore(&sa->lock, flags);
+			return -EINVAL;
+		}
+
+		snd_pcm_start_at_cleanup(st);
+
+		sa->substream = NULL;
+
+		spin_unlock_irqrestore(&sa->lock, flags);
+
+		pistachio_evt_disable_event(evt, sa->enable);
+	} else {
+		/* In the process of being started */
+		spin_unlock_irqrestore(&sa->lock, flags);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int pistachio_card_i2s_link_init(struct pistachio_i2s *i2s,
+					struct snd_soc_pcm_runtime *rtd)
+{
+	int ret, i, id;
+	unsigned long rate;
+	struct pistachio_codec_i2s *codec;
+
+	for (i = 0; i < i2s->num_codecs; i++) {
+		codec = &i2s->codecs[i];
+		codec->dai = rtd->codec_dais[i];
+		if (codec->mclk) {
+			rate = codec->mclk->cur_rate;
+			id = codec->mclk_index;
+			ret = snd_soc_dai_set_sysclk(codec->dai, id, rate, 0);
+			if (ret)
+				return ret;
+		}
+	}
 
 	return 0;
 }
@@ -333,439 +562,119 @@ static int pistachio_card_parallel_out_startup(struct snd_pcm_substream *st)
 static void pistachio_card_parallel_out_shutdown(struct snd_pcm_substream *st)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned long flags;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	spin_lock_irqsave(&pbc->parallel_out_lock, flags);
-	pbc->parallel_out_active_rate = 0;
-	spin_unlock_irqrestore(&pbc->parallel_out_lock, flags);
+	pbc->parallel_out->output.active_rate = 0;
 }
 
 static int pistachio_card_parallel_out_hw_params(struct snd_pcm_substream *st,
 				struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	pbc->parallel_out_active_rate = params_rate(params);
-
-	return 0;
-}
-
-static void pistachio_card_parallel_out_start_cb(void *context)
-{
-	struct pistachio_card_data *pbc;
-	unsigned long flags;
-	struct snd_pcm_substream *st;
-	//int ret;
-
-	pbc = (struct pistachio_card_data *)context;
-
-	spin_lock_irqsave(&pbc->parallel_out_lock, flags);
-
-	st = pbc->parallel_out_start_at_substream;
-
-	if (!st) {
-		spin_unlock_irqrestore(&pbc->parallel_out_lock, flags);
-		return;
-	}
-
-	snd_pcm_stream_lock(st);
-
-	snd_pcm_startat_unregister(st);
-
-	if(!snd_pcm_do_start(st, SNDRV_PCM_STATE_RUNNING))
-		snd_pcm_post_start(st, SNDRV_PCM_STATE_RUNNING);
-
-	snd_pcm_stream_unlock(st);
-
-	_pistachio_evt_disable_event(pbc->event_timer,
-			PISTACHIO_EVT_ENABLE_PARALLEL_OUT);
-
-	pbc->parallel_out_start_at_substream = NULL;
-
-	spin_unlock_irqrestore(&pbc->parallel_out_lock, flags);
+	return pistachio_card_change_rate(pbc, params_rate(params), NULL,
+				&pbc->parallel_out->output.active_rate);
 }
 
 static int pistachio_card_parallel_out_start_at(struct snd_pcm_substream *st,
 		int clock_type, const struct timespec *ts)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	int ret;
-	unsigned long flags;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	ret = snd_pcm_pre_start(st, SNDRV_PCM_STATE_PREPARED);
-	if (ret)
-		return ret;
-
-	spin_lock_irqsave(&pbc->parallel_out_lock, flags);
-
-	ret = pistachio_evt_set_event(pbc->event_timer,
-		PISTACHIO_EVT_ENABLE_PARALLEL_OUT,
-		PISTACHIO_EVT_TYPE_LEVEL, (struct timespec *)ts,
-		pistachio_card_parallel_out_start_cb, pbc);
-	if (ret) {
-		spin_unlock_irqrestore(&pbc->parallel_out_lock, flags);
-		return ret;
-	}
-
-	snd_pcm_startat_register(st, SNDRV_PCM_CLOCK_CLASS_AUDIO,
-		clock_type, ts, NULL);
-
-	pbc->parallel_out_start_at_substream = st;
-
-	spin_unlock_irqrestore(&pbc->parallel_out_lock, flags);
-
-	return 0;
+	return pistachio_card_start_at(&pbc->parallel_out->output,
+					pbc->event_timer, st, ts);
 }
 
 static int pistachio_card_parallel_out_start_at_abort(
-		struct snd_pcm_substream *st)
+			struct snd_pcm_substream *st)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned long flags;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	spin_lock_irqsave(&pbc->parallel_out_lock, flags);
-
-	if (!pbc->parallel_out_start_at_substream) {
-		/* Already started */
-		spin_unlock_irqrestore(&pbc->parallel_out_lock, flags);
-		return -EINVAL;
-	}
-
-	snd_pcm_startat_unregister(st);
-
-	pbc->parallel_out_start_at_substream = NULL;
-
-	spin_unlock_irqrestore(&pbc->parallel_out_lock, flags);
-
-	pistachio_evt_disable_event(pbc->event_timer,
-		PISTACHIO_EVT_ENABLE_PARALLEL_OUT);
-
-	return 0;
+	return pistachio_card_start_at_abort(
+					&pbc->parallel_out->output.start_at,
+					pbc->event_timer, st);
 }
 
 static struct snd_soc_ops pistachio_card_parallel_out_ops = {
-	.startup = pistachio_card_parallel_out_startup,
 	.shutdown = pistachio_card_parallel_out_shutdown,
 	.hw_params = pistachio_card_parallel_out_hw_params,
 	.start_at = pistachio_card_parallel_out_start_at,
 	.start_at_abort = pistachio_card_parallel_out_start_at_abort
 };
 
-static int pistachio_card_parse_of_parallel_out(struct device_node *node,
-		struct pistachio_card_data *pbc, struct snd_soc_dai_link *link,
-		struct snd_soc_dai_link_component *components)
-{
-	struct device_node *np;
-
-	link->name = link->stream_name = "pistachio-parallel-out";
-	np = of_parse_phandle(node, "cpu-dai", 0);
-	if (!np)
-		return -EINVAL;
-	link->cpu_of_node = np;
-	link->platform_of_node = np;
-	np = of_parse_phandle(node, "tpa6130a2", 0);
-	if (np) {
-		link->codecs = components;
-		link->codecs[0].of_node = np;
-		link->codecs[0].dai_name = "tpa6130a2";
-		pbc->codecs[PISTACHIO_CODEC_TPA6130A2].np = np;
-		link->num_codecs = 1;
-
-	} else {
-		link->codec_dai_name = "snd-soc-dummy-dai";
-		link->codec_name = "snd-soc-dummy";
-	}
-	link->init = pistachio_card_prl_out_link_init;
-	link->ops = &pistachio_card_parallel_out_ops;
-
-	return link->num_codecs;
-}
-
-static int pistachio_card_spdif_out_startup(struct snd_pcm_substream *st)
-{
-	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned long flags;
-
-	spin_lock_irqsave(&pbc->spdif_out_lock, flags);
-	pbc->spdif_out_active_rate = 0;
-	spin_unlock_irqrestore(&pbc->spdif_out_lock, flags);
-
-	return 0;
-}
-
 static void pistachio_card_spdif_out_shutdown(struct snd_pcm_substream *st)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned long flags;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	spin_lock_irqsave(&pbc->spdif_out_lock, flags);
-	pbc->spdif_out_active_rate = 0;
-	spin_unlock_irqrestore(&pbc->spdif_out_lock, flags);
+	pbc->spdif_out->active_rate = 0;
 }
 
 static int pistachio_card_spdif_out_hw_params(struct snd_pcm_substream *st,
-				struct snd_pcm_hw_params *params)
+					struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	pbc->spdif_out_active_rate = params_rate(params);
-
-	return 0;
-}
-
-static void pistachio_card_spdif_out_start_cb(void *context)
-{
-	struct pistachio_card_data *pbc;
-	unsigned long flags;
-	struct snd_pcm_substream *st;
-	//int ret;
-
-	pbc = (struct pistachio_card_data *)context;
-
-	spin_lock_irqsave(&pbc->spdif_out_lock, flags);
-
-	st = pbc->spdif_out_start_at_substream;
-
-	if (!st) {
-		spin_unlock_irqrestore(&pbc->spdif_out_lock, flags);
-		return;
-	}
-
-	snd_pcm_stream_lock(st);
-
-	snd_pcm_startat_unregister(st);
-
-	if(!snd_pcm_do_start(st, SNDRV_PCM_STATE_RUNNING))
-		snd_pcm_post_start(st, SNDRV_PCM_STATE_RUNNING);
-
-	snd_pcm_stream_unlock(st);
-
-	_pistachio_evt_disable_event(pbc->event_timer,
-			PISTACHIO_EVT_ENABLE_SPDIF_OUT);
-
-	pbc->spdif_out_start_at_substream = NULL;
-
-	spin_unlock_irqrestore(&pbc->spdif_out_lock, flags);
+	return pistachio_card_change_rate(pbc, params_rate(params), NULL,
+					&pbc->spdif_out->active_rate);
 }
 
 static int pistachio_card_spdif_out_start_at(struct snd_pcm_substream *st,
 		int clock_type, const struct timespec *ts)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	int ret;
-	unsigned long flags;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	ret = snd_pcm_pre_start(st, SNDRV_PCM_STATE_PREPARED);
-	if (ret)
-		return ret;
-
-	spin_lock_irqsave(&pbc->spdif_out_lock, flags);
-
-	ret = pistachio_evt_set_event(pbc->event_timer,
-		PISTACHIO_EVT_ENABLE_SPDIF_OUT,
-		PISTACHIO_EVT_TYPE_LEVEL, (struct timespec *)ts,
-		pistachio_card_spdif_out_start_cb, pbc);
-	if (ret) {
-		spin_unlock_irqrestore(&pbc->spdif_out_lock, flags);
-		return ret;
-	}
-
-	snd_pcm_startat_register(st, SNDRV_PCM_CLOCK_CLASS_AUDIO,
-		clock_type, ts, NULL);
-
-	pbc->spdif_out_start_at_substream = st;
-
-	spin_unlock_irqrestore(&pbc->spdif_out_lock, flags);
-
-	return 0;
+	return pistachio_card_start_at(pbc->spdif_out, pbc->event_timer,
+					st, ts);
 }
 
 static int pistachio_card_spdif_out_start_at_abort(
 		struct snd_pcm_substream *st)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned long flags;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	spin_lock_irqsave(&pbc->spdif_out_lock, flags);
-
-	if (!pbc->spdif_out_start_at_substream) {
-		/* Already started */
-		spin_unlock_irqrestore(&pbc->spdif_out_lock, flags);
-		return -EINVAL;
-	}
-
-	snd_pcm_startat_unregister(st);
-
-	pbc->spdif_out_start_at_substream = NULL;
-
-	spin_unlock_irqrestore(&pbc->spdif_out_lock, flags);
-
-	pistachio_evt_disable_event(pbc->event_timer,
-		PISTACHIO_EVT_ENABLE_SPDIF_OUT);
-
-	return 0;
+	return pistachio_card_start_at_abort(&pbc->spdif_out->start_at,
+						pbc->event_timer, st);
 }
 
 static struct snd_soc_ops pistachio_card_spdif_out_ops = {
-	.startup = pistachio_card_spdif_out_startup,
 	.shutdown = pistachio_card_spdif_out_shutdown,
 	.hw_params = pistachio_card_spdif_out_hw_params,
 	.start_at = pistachio_card_spdif_out_start_at,
 	.start_at_abort = pistachio_card_spdif_out_start_at_abort
 };
 
-static int pistachio_card_parse_of_spdif_out(struct device_node *node,
-		struct pistachio_card_data *pbc, struct snd_soc_dai_link *link)
-{
-	struct device_node *np;
-
-	link->name = link->stream_name = "pistachio-spdif-out";
-	np = of_parse_phandle(node, "cpu-dai", 0);
-	if (!np)
-		return -EINVAL;
-	link->cpu_of_node = np;
-	link->platform_of_node = np;
-	link->codec_dai_name = "snd-soc-dummy-dai";
-	link->codec_name = "snd-soc-dummy";
-	link->ops = &pistachio_card_spdif_out_ops;
-
-	return 0;
-}
-
-static int pistachio_card_parse_of_spdif_in(struct device_node *node,
-		struct pistachio_card_data *pbc, struct snd_soc_dai_link *link)
-{
-	struct device_node *np;
-
-	link->name = link->stream_name = "pistachio-spdif-in";
-	np = of_parse_phandle(node, "cpu-dai", 0);
-	if (!np)
-		return -EINVAL;
-	link->cpu_of_node = np;
-	link->platform_of_node = np;
-	link->codec_dai_name = "snd-soc-dummy-dai";
-	link->codec_name = "snd-soc-dummy";
-
-	return 0;
-}
-
-static int pistachio_card_find_codec_i2s(struct pistachio_card_data *pbc,
-		struct snd_soc_dai *codec, bool i2s_out)
-{
-	int i;
-	struct device_node *np;
-
-	for (i = 0; i < PISTACHIO_MAX_CODECS; i++) {
-		np = pbc->codecs[i].np;
-		if (np && (np == codec->dev->of_node)) {
-			switch (i) {
-			case PISTACHIO_CODEC_PCM3060_DAC:
-			case PISTACHIO_CODEC_PCM3060_ADC:
-				if (i2s_out)
-					return PISTACHIO_CODEC_PCM3060_DAC;
-				else
-					return PISTACHIO_CODEC_PCM3060_ADC;
-			case PISTACHIO_CODEC_PCM3168A_1_DAC:
-			case PISTACHIO_CODEC_PCM3168A_1_ADC:
-				if (i2s_out)
-					return PISTACHIO_CODEC_PCM3168A_1_DAC;
-				else
-					return PISTACHIO_CODEC_PCM3168A_1_ADC;
-			case PISTACHIO_CODEC_PCM3168A_2_DAC:
-			case PISTACHIO_CODEC_PCM3168A_2_ADC:
-				if (i2s_out)
-					return PISTACHIO_CODEC_PCM3168A_2_DAC;
-				else
-					return PISTACHIO_CODEC_PCM3168A_2_ADC;
-			default:
-				return -1;
-			}
-		}
-	}
-
-	return -1;
-}
-
-static int pistachio_card_i2s_mclk_setup(struct pistachio_card_data *pbc,
-		unsigned int rate, bool i2s_out_mclk_shared, bool i2s_out)
-{
-	int ret;
-	unsigned int ratio_start, num_ratios;
-	unsigned long new_rate, temp;
-
-	if (i2s_out) {
-		ratio_start = PISTACHIO_I2S_MCLK_RATIO_START;
-		num_ratios = PISTACHIO_I2S_MCLK_NUM_RATIOS;
-	} else {
-		ratio_start = 0;
-		num_ratios = PCM3168A_PCM3060_NUM_MCLK_RATIOS_ADC;
-	}
-
-	ret = pistachio_card_get_best_clk_rate(pbc, rate, i2s_out_mclk_shared,
-			ratio_start, num_ratios, pbc->i2s_mclk_rate, &new_rate);
-	if (ret <= 0)
-		return ret;
-
-	if (i2s_out_mclk_shared) {
-		if (i2s_out && pbc->i2s_in_active_rate) {
-			dev_dbg(pbc->card.dev,
-				"Cannot change mclk rate, i2s in active\n");
-			return -EINVAL;
-		} else if (!i2s_out && pbc->i2s_out_active_rate) {
-			dev_dbg(pbc->card.dev,
-				"Cannot change mclk rate, i2s out active\n");
-			return -EINVAL;
-		}
-	}
-
-	temp = pbc->i2s_mclk_rate;
-	pbc->i2s_mclk_rate = new_rate;
-
-	ret = clk_set_rate(pbc->i2s_mclk, new_rate);
-	if (ret) {
-		pbc->i2s_mclk_rate = temp;
-		return ret;
-	}
-
-	if (i2s_out_mclk_shared)
-		return pistachio_card_update_codec_sysclks(pbc, new_rate);
-
-	return 0;
-}
-
-static int pistachio_card_i2s_clk_notifier_cb(struct notifier_block *nb,
-		unsigned long event, void *data)
+static int pistachio_card_i2s_clk_cb(struct notifier_block *nb,
+					unsigned long event, void *data)
 {
 	struct clk_notifier_data *ndata = data;
-	struct pistachio_card_data *pbc;
-	int diff;
+	struct pistachio_card *pbc;
+	unsigned int diff;
+	u64 cur_rate;
 	u64 tolerance;
 
-	pbc = container_of(nb, struct pistachio_card_data, i2s_clk_notifier);
+	pbc = container_of(nb, struct pistachio_card, i2s_clk_notifier);
+
+	cur_rate = pbc->i2s_mclk.cur_rate;
 
 	switch (event) {
 	case PRE_RATE_CHANGE:
-		diff = abs((int)ndata->new_rate - (int)pbc->i2s_mclk_rate);
-
-		tolerance = ((u64)pbc->i2s_mclk_rate * 5) + 50;
-		do_div(tolerance, 100);
-
-		if (diff < (int)tolerance) {
-			dev_dbg(pbc->card.dev,
-				"rate change OK (%lu)\n", ndata->new_rate);
+		diff = abs(ndata->new_rate - cur_rate);
+		tolerance = DIV_ROUND_CLOSEST_ULL(cur_rate * 5, 100);
+		if (diff < tolerance) {
+			/*
+			 * Fractional adjustment made by atu, or new rate set
+			 * by card driver if diff is zero
+			 */
 			return NOTIFY_OK;
 		} else {
-			dev_dbg(pbc->card.dev,
-				"rate change DENIED (%lu)\n", ndata->new_rate);
+			/* Significant change made by i2s cpu dai driver */
 			return NOTIFY_STOP;
 		}
 	case POST_RATE_CHANGE:
@@ -776,492 +685,104 @@ static int pistachio_card_i2s_clk_notifier_cb(struct notifier_block *nb,
 	}
 }
 
-static int pistachio_card_i2s_hw_params(struct pistachio_card_data *pbc,
-				unsigned int rate, bool out)
-{
-	bool i2s_out_mclk_shared, use_dac_clk;
-	int ret;
-
-	i2s_out_mclk_shared = (pbc->mclk_source == PISTACHIO_MCLK_I2S);
-	use_dac_clk = (pbc->mclk_source == PISTACHIO_MCLK_DAC_CLK);
-
-	if (out) {
-		ret = pistachio_card_i2s_mclk_setup(pbc, rate,
-				i2s_out_mclk_shared, true);
-		if (ret)
-			return ret;
-
-		if (use_dac_clk) {
-			ret = pistachio_card_set_dac_clk(pbc, rate, true);
-			if (ret)
-				return ret;
-		}
-	} else {
-		if (i2s_out_mclk_shared) {
-			ret = pistachio_card_i2s_mclk_setup(pbc, rate,
-				i2s_out_mclk_shared, false);
-			if (ret)
-				return ret;
-		} else if (use_dac_clk) {
-			ret = pistachio_card_set_dac_clk(pbc, rate, false);
-			if (ret)
-				return ret;
-		}
-	}
-
-	return 0;
-}
-
-static int pistachio_card_get_i2s_out_master(struct pistachio_card_data *pbc,
-					struct device_node *i2s_out_master)
-{
-	struct pistachio_codec *codec;
-	struct snd_soc_dai_link *link = pbc->dai_links[PISTACHIO_LINK_I2S_OUT];
-	bool found = false;
-
-	if (!link)
-		return 0;
-
-	if (IS_ERR(i2s_out_master))
-		return PTR_ERR(i2s_out_master);
-
-	pbc->i2s_out_cpu_fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
-	if (i2s_out_master && (i2s_out_master == link->cpu_of_node)) {
-		pbc->i2s_out_master = PISTACHIO_CPU_I2S_OUT;
-		pbc->i2s_out_cpu_fmt |= SND_SOC_DAIFMT_CBS_CFS;
-		found = true;
-	} else {
-		pbc->i2s_out_cpu_fmt |= SND_SOC_DAIFMT_CBM_CFM;
-	}
-
-	codec =  &pbc->codecs[PISTACHIO_CODEC_PCM3060_DAC];
-	codec->fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
-	if (i2s_out_master && (i2s_out_master == codec->np)) {
-		pbc->i2s_out_master = PISTACHIO_CODEC_PCM3060_DAC;
-		codec->fmt |= SND_SOC_DAIFMT_CBM_CFM;
-		found = true;
-	} else {
-		codec->fmt |= SND_SOC_DAIFMT_CBS_CFS;
-	}
-
-	codec =  &pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_DAC];
-	codec->fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
-	if (i2s_out_master && (i2s_out_master == codec->np)) {
-		pbc->i2s_out_master = PISTACHIO_CODEC_PCM3168A_1_DAC;
-		codec->fmt |= SND_SOC_DAIFMT_CBM_CFM;
-		found = true;
-	} else {
-		codec->fmt |= SND_SOC_DAIFMT_CBS_CFS;
-	}
-
-	codec =  &pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_DAC];
-	codec->fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
-	if (i2s_out_master && (i2s_out_master == codec->np)) {
-		pbc->i2s_out_master = PISTACHIO_CODEC_PCM3168A_2_DAC;
-		codec->fmt |= SND_SOC_DAIFMT_CBM_CFM;
-		found = true;
-	} else {
-		codec->fmt |= SND_SOC_DAIFMT_CBS_CFS;
-	}
-
-	if (!found)
-		pbc->i2s_out_master = PISTACHIO_FRAME_EXTERNAL;
-
-	return 0;
-}
-
 static int pistachio_card_i2s_out_link_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	struct snd_soc_dai *codec, *cpu = rtd->cpu_dai;
-	int ret, i, j;
-	unsigned long sysclk;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	ret = snd_soc_dai_set_fmt(cpu, pbc->i2s_out_cpu_fmt);
-	if (ret)
-		return ret;
+	pbc->i2s_out->cpu_dev = rtd->cpu_dai->dev;
 
-	for (i = 0; i < rtd->num_codecs; i++) {
-		codec = rtd->codec_dais[i];
-		j = pistachio_card_find_codec_i2s(pbc, codec, true);
-		if (j < 0)
-			continue;
-		pbc->codecs[j].dai = codec;
-		ret = snd_soc_dai_set_fmt(codec, pbc->codecs[j].fmt);
-		if (ret)
-			return ret;
-
-		if (pbc->mclk_source == PISTACHIO_MCLK_DAC_CLK)
-			sysclk = pbc->dac_clk_rate;
-		else
-			sysclk = pbc->i2s_mclk_rate;
-
-		ret = snd_soc_dai_set_sysclk(codec, 0, sysclk, 0);
-		if (ret)
-			return ret;
-	}
-
-	return 0;
-}
-
-static int pistachio_card_i2s_out_startup(struct snd_pcm_substream *st)
-{
-	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned long flags;
-
-	spin_lock_irqsave(&pbc->i2s_out_lock, flags);
-	pbc->i2s_out_active_rate = 0;
-	spin_unlock_irqrestore(&pbc->i2s_out_lock, flags);
-
-	return 0;
+	return pistachio_card_i2s_link_init(&pbc->i2s_out->i2s, rtd);
 }
 
 static void pistachio_card_i2s_out_shutdown(struct snd_pcm_substream *st)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned long flags;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	spin_lock_irqsave(&pbc->i2s_out_lock, flags);
-	pbc->i2s_out_active_rate = 0;
-	spin_unlock_irqrestore(&pbc->i2s_out_lock, flags);
+	pbc->i2s_out->output.active_rate = 0;
 }
 
 static int pistachio_card_i2s_out_hw_params(struct snd_pcm_substream *st,
 				struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned int rate;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	rate = params_rate(params);
-	pbc->i2s_out_active_rate = rate;
-
-	return pistachio_card_i2s_hw_params(pbc, rate, true);
-}
-
-static void pistachio_card_i2s_out_start_cb(void *context)
-{
-	struct pistachio_card_data *pbc;
-	unsigned long flags;
-	struct snd_pcm_substream *st;
-	//int ret;
-
-	pbc = (struct pistachio_card_data *)context;
-
-	spin_lock_irqsave(&pbc->i2s_out_lock, flags);
-
-	st = pbc->i2s_out_start_at_substream;
-
-	if (!st) {
-		spin_unlock_irqrestore(&pbc->i2s_out_lock, flags);
-		return;
-	}
-
-	snd_pcm_stream_lock(st);
-
-	snd_pcm_startat_unregister(st);
-
-	if(!snd_pcm_do_start(st, SNDRV_PCM_STATE_RUNNING))
-		snd_pcm_post_start(st, SNDRV_PCM_STATE_RUNNING);
-
-	snd_pcm_stream_unlock(st);
-
-	_pistachio_evt_disable_event(pbc->event_timer,
-			PISTACHIO_EVT_ENABLE_I2S_OUT);
-
-	pbc->i2s_out_start_at_substream = NULL;
-
-	spin_unlock_irqrestore(&pbc->i2s_out_lock, flags);
+	return pistachio_card_change_rate(pbc, params_rate(params),
+		&pbc->i2s_out->i2s, &pbc->i2s_out->output.active_rate);
 }
 
 static int pistachio_card_i2s_out_start_at(struct snd_pcm_substream *st,
 		int clock_type, const struct timespec *ts)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	int ret;
-	unsigned long flags;
-	struct timespec ts_modified = *ts;
-	struct timespec ts_sub;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	printk("### pistachio_card_i2s_out_start_at\n");
-
-	ret = snd_pcm_pre_start(st, SNDRV_PCM_STATE_PREPARED);
-	if (ret)
-		return ret;
-
-	printk("### pistachio_card_i2s_out_start_at 2\n");
-
-	spin_lock_irqsave(&pbc->i2s_out_lock, flags);
-
-	/*
-	 * I2S outputs zero samples for the first frame. The first sample
-	 * of audio data from the application is then used in the second
-	 * frame. Subtract a frame from the start time to ensure start_at
-	 * has the same meaning for all interfaces
-	 */
-	ts_sub.tv_sec = 0;
-	ts_sub.tv_nsec = DIV_ROUND_CLOSEST(1000000000,
-			pbc->i2s_out_active_rate);
-	ts_modified = timespec_sub(ts_modified, ts_sub);
-
-	ret = pistachio_evt_set_event(pbc->event_timer,
-		PISTACHIO_EVT_ENABLE_I2S_OUT,
-		PISTACHIO_EVT_TYPE_LEVEL, &ts_modified,
-		pistachio_card_i2s_out_start_cb, pbc);
-	if (ret) {
-		spin_unlock_irqrestore(&pbc->i2s_out_lock, flags);
-		return ret;
-	}
-
-	printk("### pistachio_card_i2s_out_start_at 3\n");
-
-	snd_pcm_startat_register(st, SNDRV_PCM_CLOCK_CLASS_AUDIO,
-		clock_type, ts, NULL);
-
-	pbc->i2s_out_start_at_substream = st;
-
-	spin_unlock_irqrestore(&pbc->i2s_out_lock, flags);
-
-	return 0;
+	return pistachio_card_start_at(&pbc->i2s_out->output,
+					pbc->event_timer, st, ts);
 }
 
 static int pistachio_card_i2s_out_start_at_abort(
 		struct snd_pcm_substream *st)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned long flags;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	spin_lock_irqsave(&pbc->i2s_out_lock, flags);
-
-	if (!pbc->i2s_out_start_at_substream) {
-		/* Already started */
-		spin_unlock_irqrestore(&pbc->i2s_out_lock, flags);
-		return -EINVAL;
-	}
-
-	snd_pcm_startat_unregister(st);
-
-	pbc->i2s_out_start_at_substream = NULL;
-
-	spin_unlock_irqrestore(&pbc->i2s_out_lock, flags);
-
-	pistachio_evt_disable_event(pbc->event_timer,
-		PISTACHIO_EVT_ENABLE_I2S_OUT);
-
-	return 0;
+	return pistachio_card_start_at_abort(&pbc->i2s_out->output.start_at,
+						pbc->event_timer, st);
 }
 
 static struct snd_soc_ops pistachio_card_i2s_out_ops = {
-	.startup = pistachio_card_i2s_out_startup,
 	.shutdown = pistachio_card_i2s_out_shutdown,
 	.hw_params = pistachio_card_i2s_out_hw_params,
 	.start_at = pistachio_card_i2s_out_start_at,
 	.start_at_abort = pistachio_card_i2s_out_start_at_abort
 };
 
-static int pistachio_card_parse_of_i2s_out(struct device_node *node,
-		struct pistachio_card_data *pbc, struct snd_soc_dai_link *link,
-		struct snd_soc_dai_link_component *components,
-		struct device_node **i2s_out_master)
-{
-	struct device_node *np;
-	unsigned int fmt;
-	struct device *dev = pbc->card.dev;
-
-	link->name = link->stream_name = "pistachio-i2s-out";
-	np = of_parse_phandle(node, "cpu-dai", 0);
-	if (!np)
-		return -EINVAL;
-	link->cpu_of_node = np;
-	link->platform_of_node = np;
-	fmt = snd_soc_of_parse_daifmt(node, "cpu-", NULL, NULL);
-	pbc->i2s_out_cpu_fmt = fmt;
-	link->codecs = components;
-	np = of_parse_phandle(node, "pcm3060", 0);
-	if (np) {
-		if (pbc->db != PISTACHIO_DAUGHTERBOARD_NONE) {
-			of_node_put(np);
-			dev_err(dev, "pcm3060 is available only when no daughterboard is present");
-			return -EINVAL;
-		}
-		pbc->codecs[PISTACHIO_CODEC_PCM3060_DAC].np = np;
-		link->codecs[link->num_codecs].dai_name = "pcm3060-dac";
-		link->codecs[link->num_codecs++].of_node = np;
-		fmt = snd_soc_of_parse_daifmt(node, "pcm3060-", NULL, NULL);
-		pbc->codecs[PISTACHIO_CODEC_PCM3060_DAC].fmt = fmt;
-	}
-	np = of_parse_phandle(node, "pcm3168a-1", 0);
-	if (np) {
-		if (pbc->db != PISTACHIO_DAUGHTERBOARD_CODEC) {
-			of_node_put(np);
-			dev_err(dev, "pcm3168a-1 is available only when codec daughterboard is present");
-			return -EINVAL;
-		}
-		pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_DAC].np = np;
-		link->codecs[link->num_codecs].dai_name = "pcm3168a-dac";
-		link->codecs[link->num_codecs++].of_node = np;
-		fmt = snd_soc_of_parse_daifmt(node, "pcm3168a-1-", NULL, NULL);
-		pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_DAC].fmt = fmt;
-	}
-	np = of_parse_phandle(node, "pcm3168a-2", 0);
-	if (np) {
-		if (pbc->db != PISTACHIO_DAUGHTERBOARD_CODEC) {
-			of_node_put(np);
-			dev_err(dev, "pcm3168a-2 is available only when codec daughterboard is present");
-			return -EINVAL;
-		}
-		pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_DAC].np = np;
-		link->codecs[link->num_codecs].dai_name = "pcm3168a-dac";
-		link->codecs[link->num_codecs++].of_node = np;
-		fmt = snd_soc_of_parse_daifmt(node, "pcm3168a-2-", NULL, NULL);
-		pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_DAC].fmt = fmt;
-	}
-	if (!link->num_codecs) {
-		link->codec_dai_name = "snd-soc-dummy-dai";
-		link->codec_name = "snd-soc-dummy";
-		link->codecs = NULL;
-	}
-	link->init = pistachio_card_i2s_out_link_init;
-	link->ops = &pistachio_card_i2s_out_ops;
-
-	*i2s_out_master = of_parse_phandle(node, "clock-master", 0);
-
-	return link->num_codecs;
-}
-
-#define PISTACHIO_I2S_LOOPBACK_REG		0x88
-#define PISTACHIO_I2S_LOOPBACK_DATA_MASK	0x4
-#define PISTACHIO_I2S_LOOPBACK_CLK_MASK		0x3
-#define PISTACHIO_I2S_LOOPBACK_CLK_SHIFT	0
-
-#define PISTACHIO_I2S_LOOPBACK_CLK_NONE		0
-#define PISTACHIO_I2S_LOOPBACK_CLK_MFIO		1
-#define PISTACHIO_I2S_LOOPBACK_CLK_LOCAL	2
-
-static int pistachio_card_get_i2s_in_master(struct pistachio_card_data *pbc,
-					struct device_node *i2s_in_master)
-{
-	struct pistachio_codec *codec;
-	struct snd_soc_dai_link *link = pbc->dai_links[PISTACHIO_LINK_I2S_IN];
-	bool found = false;
-	u32 loopback_val;
-
-	if (!link)
-		return 0;
-
-	if (IS_ERR(i2s_in_master))
-		return PTR_ERR(i2s_in_master);
-
-	link = pbc->dai_links[PISTACHIO_LINK_I2S_OUT];
-
-	pbc->i2s_in_cpu_fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
-	pbc->i2s_in_cpu_fmt |= SND_SOC_DAIFMT_CBM_CFM;
-	if (link && i2s_in_master && (i2s_in_master == link->cpu_of_node)) {
-		if (pbc->i2s_out_master != PISTACHIO_CPU_I2S_OUT) {
-			dev_err(pbc->card.dev, "Invalid i2s master config");
-			return -EINVAL;
-		}
-		pbc->i2s_in_master = PISTACHIO_CPU_I2S_OUT;
-		found = true;
-	}
-
-	codec =  &pbc->codecs[PISTACHIO_CODEC_PCM3060_ADC];
-	codec->fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
-	if (i2s_in_master && (i2s_in_master == codec->np)) {
-		pbc->i2s_in_master = PISTACHIO_CODEC_PCM3060_ADC;
-		codec->fmt |= SND_SOC_DAIFMT_CBM_CFM;
-		found = true;
-	} else {
-		codec->fmt |= SND_SOC_DAIFMT_CBS_CFS;
-	}
-
-	codec =  &pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_ADC];
-	codec->fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
-	if (i2s_in_master && (i2s_in_master == codec->np)) {
-		pbc->i2s_in_master = PISTACHIO_CODEC_PCM3168A_1_ADC;
-		codec->fmt |= SND_SOC_DAIFMT_CBM_CFM;
-		found = true;
-	} else {
-		codec->fmt |= SND_SOC_DAIFMT_CBS_CFS;
-	}
-
-	codec =  &pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_ADC];
-	codec->fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
-	if (i2s_in_master && (i2s_in_master == codec->np)) {
-		pbc->i2s_in_master = PISTACHIO_CODEC_PCM3168A_2_ADC;
-		codec->fmt |= SND_SOC_DAIFMT_CBM_CFM;
-		found = true;
-	} else {
-		codec->fmt |= SND_SOC_DAIFMT_CBS_CFS;
-	}
-
-	if (!found)
-		pbc->i2s_in_master = PISTACHIO_FRAME_EXTERNAL;
-
-	if (pbc->i2s_in_master == PISTACHIO_CPU_I2S_OUT)
-		loopback_val = PISTACHIO_I2S_LOOPBACK_CLK_LOCAL;
-	else
-		loopback_val = PISTACHIO_I2S_LOOPBACK_CLK_NONE;
-
-	loopback_val <<= PISTACHIO_I2S_LOOPBACK_CLK_SHIFT;
-
-	regmap_update_bits(pbc->periph_regs, PISTACHIO_I2S_LOOPBACK_REG,
-		PISTACHIO_I2S_LOOPBACK_CLK_MASK, loopback_val);
-
-	return 0;
-}
-
 static int pistachio_card_i2s_in_link_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	struct snd_soc_dai *codec, *cpu = rtd->cpu_dai;
-	int ret, i, j;
+	int ret, i;
 	unsigned int fmt;
-	unsigned long sysclk;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
+	u32 val;
 
-	fmt = pbc->i2s_in_cpu_fmt;
+	pbc->i2s_in->cpu_dev = rtd->cpu_dai->dev;
 
-	if ((fmt & SND_SOC_DAIFMT_MASTER_MASK) == SND_SOC_DAIFMT_CBS_CFS) {
-		fmt = (fmt & ~SND_SOC_DAIFMT_MASTER_MASK) |
-			SND_SOC_DAIFMT_CBM_CFM;
-	}
-	ret = snd_soc_dai_set_fmt(cpu, fmt);
+	ret = pistachio_card_i2s_link_init(&pbc->i2s_in->i2s, rtd);
 	if (ret)
 		return ret;
 
-	for (i = 0; i < rtd->num_codecs; i++) {
-		codec = rtd->codec_dais[i];
-		j = pistachio_card_find_codec_i2s(pbc, codec, false);
-		if (j == -1)
-			continue;
-		pbc->codecs[j].dai = codec;
-		ret = snd_soc_dai_set_fmt(codec, pbc->codecs[j].fmt);
-		if (ret)
-			return ret;
+	fmt = pbc->i2s_in->fmt | SND_SOC_DAIFMT_CBM_CFM;
+	ret = snd_soc_dai_set_fmt(rtd->cpu_dai, fmt);
+	if (ret)
+		return ret;
 
-		if (pbc->mclk_source == PISTACHIO_MCLK_DAC_CLK)
-			sysclk = pbc->dac_clk_rate;
+	for (i = 0; i < pbc->i2s_in->i2s.num_codecs; i++) {
+		fmt = pbc->i2s_in->fmt;
+
+		if (i == pbc->i2s_in->frame_master)
+			if (i == pbc->i2s_in->bitclock_master)
+				fmt |= SND_SOC_DAIFMT_CBM_CFM;
+			else
+				fmt |= SND_SOC_DAIFMT_CBS_CFM;
 		else
-			sysclk = pbc->i2s_mclk_rate;
+			if (i == pbc->i2s_in->bitclock_master)
+				fmt |= SND_SOC_DAIFMT_CBM_CFS;
+			else
+				fmt |= SND_SOC_DAIFMT_CBS_CFS;
 
-		ret = snd_soc_dai_set_sysclk(codec, 0, sysclk, 0);
+		ret = snd_soc_dai_set_fmt(rtd->codec_dais[i], fmt);
 		if (ret)
 			return ret;
 	}
 
-	return 0;
-}
+	if (pbc->i2s_in->frame_master == PISTACHIO_CLOCK_MASTER_LOOPBACK)
+		val = PISTACHIO_I2S_LOOPBACK_CLK_LOCAL;
+	else
+		val = PISTACHIO_I2S_LOOPBACK_CLK_NONE;
 
-static int pistachio_card_i2s_in_startup(struct snd_pcm_substream *st)
-{
-	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-
-	pbc->i2s_in_active_rate = 0;
+	regmap_update_bits(pbc->periph_regs, PISTACHIO_I2S_LOOPBACK_REG,
+				PISTACHIO_I2S_LOOPBACK_CLK_MASK, val);
 
 	return 0;
 }
@@ -1269,242 +790,754 @@ static int pistachio_card_i2s_in_startup(struct snd_pcm_substream *st)
 static void pistachio_card_i2s_in_shutdown(struct snd_pcm_substream *st)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	pbc->i2s_in_active_rate = 0;
+	pbc->i2s_in->active_rate = 0;
 }
 
 static int pistachio_card_i2s_in_hw_params(struct snd_pcm_substream *st,
 				struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(rtd->card);
-	unsigned int rate;
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
 
-	rate = params_rate(params);
-	pbc->i2s_in_active_rate = rate;
-
-	return pistachio_card_i2s_hw_params(pbc, rate, false);
+	return pistachio_card_change_rate(pbc, params_rate(params),
+		&pbc->i2s_in->i2s, &pbc->i2s_in->active_rate);
 }
 
 static struct snd_soc_ops pistachio_card_i2s_in_ops = {
-	.startup = pistachio_card_i2s_in_startup,
 	.shutdown = pistachio_card_i2s_in_shutdown,
 	.hw_params = pistachio_card_i2s_in_hw_params
 };
 
-static int pistachio_card_parse_of_i2s_in(struct device_node *node,
-		struct pistachio_card_data *pbc, struct snd_soc_dai_link *link,
-		struct snd_soc_dai_link_component *components,
-		struct device_node **i2s_in_master)
+static int pistachio_card_parse_of_spdif_out(struct device_node *node,
+		struct pistachio_card *pbc, struct snd_soc_dai_link *link)
 {
 	struct device_node *np;
-	unsigned int fmt;
-	struct device *dev = pbc->card.dev;
 
-	link->name = link->stream_name = "pistachio-i2s-in";
+	pbc->spdif_out = devm_kzalloc(pbc->card.dev, sizeof(*pbc->spdif_out),
+					GFP_KERNEL);
+	if (!pbc->spdif_out)
+		return -ENOMEM;
+
+	pbc->spdif_out->start_at.enable = PISTACHIO_EVT_ENABLE_SPDIF_OUT;
+	pbc->spdif_out->start_at.dummy_frames = 1;
+	spin_lock_init(&pbc->spdif_out->start_at.lock);
+
+	link->name = link->stream_name = "pistachio-spdif-out";
+
 	np = of_parse_phandle(node, "cpu-dai", 0);
 	if (!np)
 		return -EINVAL;
+
 	link->cpu_of_node = np;
 	link->platform_of_node = np;
-	fmt = snd_soc_of_parse_daifmt(node, "cpu-", NULL, NULL);
-	pbc->i2s_in_cpu_fmt = fmt;
-	link->codecs = components;
-	np = of_parse_phandle(node, "pcm3060", 0);
-	if (np) {
-		if (pbc->db != PISTACHIO_DAUGHTERBOARD_NONE) {
-			of_node_put(np);
-			dev_err(dev, "pcm3060 is available only when no daughterboard is present");
-			return -EINVAL;
+	link->codec_dai_name = "snd-soc-dummy-dai";
+	link->codec_name = "snd-soc-dummy";
+	link->ops = &pistachio_card_spdif_out_ops;
+
+	return 0;
+}
+
+static int pistachio_card_parse_of_spdif_in(struct device_node *node,
+		struct pistachio_card *pbc, struct snd_soc_dai_link *link)
+{
+	struct device_node *np;
+
+	pbc->spdif_in = true;
+
+	link->name = link->stream_name = "pistachio-spdif-in";
+
+	np = of_parse_phandle(node, "cpu-dai", 0);
+	if (!np)
+		return -EINVAL;
+
+	link->cpu_of_node = np;
+	link->platform_of_node = np;
+	link->codec_dai_name = "snd-soc-dummy-dai";
+	link->codec_name = "snd-soc-dummy";
+
+	return 0;
+}
+
+static int pistachio_card_parse_of_parallel_out(struct device_node *node,
+		struct pistachio_card *pbc, struct snd_soc_dai_link *link)
+{
+	struct device_node *np;
+	int ret;
+
+	pbc->parallel_out = devm_kzalloc(pbc->card.dev,
+			sizeof(*pbc->parallel_out), GFP_KERNEL);
+	if (!pbc->parallel_out)
+		return -ENOMEM;
+
+	pbc->parallel_out->output.start_at.enable =
+			PISTACHIO_EVT_ENABLE_PARALLEL_OUT;
+	pbc->parallel_out->output.start_at.dummy_frames = 2;
+	spin_lock_init(&pbc->parallel_out->output.start_at.lock);
+
+	link->name = link->stream_name = "pistachio-parallel-out";
+
+	np = of_parse_phandle(node, "cpu-dai", 0);
+	if (!np)
+		return -EINVAL;
+
+	link->cpu_of_node = np;
+	link->platform_of_node = np;
+	link->codecs = &pbc->parallel_out->internal_dac;
+	np = of_parse_phandle(node, "sound-dai", 0);
+	if (!np)
+		return -EINVAL;
+	link->codecs[0].of_node = np;
+	link->num_codecs = 1;
+	ret = snd_soc_of_get_dai_name(node, &link->codecs[0].dai_name);
+	if (ret)
+		return ret;
+
+	link->ops = &pistachio_card_parallel_out_ops;
+
+	return 0;
+}
+
+static int pistachio_card_parse_of_i2s_mclk(struct device_node *np,
+	struct pistachio_mclk *mclk, struct pistachio_i2s_mclk_fs_info *fs)
+{
+	int ret, i, j, k, num_fs_rates;
+	u32 min_freq, max_freq, fs_rates[PISTACHIO_MAX_FS_RATES];
+
+	ret = of_property_read_u32(np, "mclk-min-freq", &min_freq);
+	if (ret)
+		return ret;
+	ret = of_property_read_u32(np, "mclk-max-freq", &max_freq);
+	if (ret)
+		return ret;
+
+	if (max_freq < PISTACHIO_MIN_MCLK_FREQ)
+		return -EINVAL;
+	if (min_freq > mclk->min_rate)
+		mclk->min_rate = min_freq;
+	if (max_freq < mclk->max_rate)
+		mclk->max_rate = max_freq;
+	if (mclk->min_rate > mclk->max_rate)
+		return -EINVAL;
+
+	num_fs_rates = of_property_count_u32_elems(np, "mclk-fs");
+	if (num_fs_rates < 0)
+		return num_fs_rates;
+	if (!num_fs_rates || (num_fs_rates > PISTACHIO_MAX_FS_RATES))
+		return -EINVAL;
+
+	ret = of_property_read_u32_array(np, "mclk-fs", fs_rates,
+						num_fs_rates);
+	if (ret)
+		return ret;
+
+	/*
+	 * If this is the first fs-rates list for this combination
+	 * of {i2s direction, mclk}, this list defines the
+	 * current fs-rate list for this combination. Else, this list
+	 * subtracts any fs-rates that are not present in both lists from the
+	 * current list for this combination
+	 */
+	if (!fs->num_fs_rates) {
+		for (i = 0; i < num_fs_rates; i++)
+			fs->fs_rates[i] = fs_rates[i];
+		fs->num_fs_rates = num_fs_rates;
+	} else {
+		for (j = 0; j < fs->num_fs_rates; j++) {
+			for (i = 0; i < num_fs_rates; i++)
+				if (fs->fs_rates[j] == fs_rates[i])
+					break;
+			if (i == num_fs_rates) {
+				for (k = j; k < (fs->num_fs_rates - 1); k++)
+					fs->fs_rates[k] = fs->fs_rates[k + 1];
+				fs->num_fs_rates--;
+				if (!fs->num_fs_rates)
+					return -EINVAL;
+				j--;
+			}
 		}
-		pbc->codecs[PISTACHIO_CODEC_PCM3060_ADC].np = np;
-		link->codecs[link->num_codecs].dai_name = "pcm3060-adc";
-		link->codecs[link->num_codecs++].of_node = np;
-		fmt = snd_soc_of_parse_daifmt(node, "pcm3060-", NULL, NULL);
-		pbc->codecs[PISTACHIO_CODEC_PCM3060_ADC].fmt = fmt;
 	}
-	np = of_parse_phandle(node, "pcm3168a-1", 0);
-	if (np) {
-		if (pbc->db != PISTACHIO_DAUGHTERBOARD_CODEC) {
-			of_node_put(np);
-			dev_err(dev, "pcm3168a-1 is available only when codec daughterboard is present");
-			return -EINVAL;
+
+	return 0;
+}
+
+static int pistachio_card_parse_of_i2s_codecs(struct device_node *np,
+			struct pistachio_card *pbc,
+			struct pistachio_i2s_codec_info *codec_info,
+			struct pistachio_i2s_mclk_fs_info *i2s_fs_info,
+			struct pistachio_i2s_mclk_fs_info *dac_fs_info)
+{
+	int i, j, ret;
+	struct device_node *subnode, *codec;
+	struct pistachio_i2s_codec_info_s *info;
+	u32 mclk_id;
+	struct pistachio_mclk *mclk;
+	struct pistachio_i2s_mclk_fs_info *fs_info;
+
+	j = 0;
+	for_each_child_of_node(np, subnode) {
+		ret = of_property_read_u32(subnode, "mclk", &mclk_id);
+		if (ret)
+			return ret;
+
+		switch (mclk_id) {
+		case PISTACHIO_MCLK_I2S:
+			mclk = &pbc->i2s_mclk;
+			fs_info = i2s_fs_info;
+			break;
+		case PISTACHIO_MCLK_DAC:
+			mclk = &pbc->dac_mclk;
+			fs_info = dac_fs_info;
+			break;
+		case PISTACHIO_MCLK_NONE:
+			mclk = NULL;
+			break;
+		default:
+			ret = -EINVAL;
+			goto err_subnode;
 		}
-		pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_ADC].np = np;
-		link->codecs[link->num_codecs].dai_name = "pcm3168a-adc";
-		link->codecs[link->num_codecs++].of_node = np;
-		fmt = snd_soc_of_parse_daifmt(node, "pcm3168a-1-", NULL, NULL);
-		pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_ADC].fmt = fmt;
-	}
-	np = of_parse_phandle(node, "pcm3168a-2", 0);
-	if (np) {
-		if (pbc->db != PISTACHIO_DAUGHTERBOARD_CODEC) {
-			of_node_put(np);
-			dev_err(dev, "pcm3168a-2 is available only when codec daughterboard is present");
-			return -EINVAL;
+		if (mclk) {
+			ret = pistachio_card_parse_of_i2s_mclk(subnode, mclk,
+								fs_info);
+			if (ret)
+				goto err_subnode;
 		}
-		pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_ADC].np = np;
-		link->codecs[link->num_codecs].dai_name = "pcm3168a-adc";
-		link->codecs[link->num_codecs++].of_node = np;
-		fmt = snd_soc_of_parse_daifmt(node, "pcm3168a-2-", NULL, NULL);
-		pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_ADC].fmt = fmt;
+
+		codec = of_parse_phandle(subnode, "sound-dai", 0);
+		if (!codec)
+			continue;
+		if (codec_info->total_codecs == PISTACHIO_MAX_I2S_CODECS) {
+			ret = -EINVAL;
+			of_node_put(codec);
+			goto err_subnode;
+		}
+		for (i = 0; i < codec_info->total_codecs; i++)
+			if (codec_info->codecs[i].np == codec)
+				break;
+		if (i == codec_info->total_codecs)
+			codec_info->unique_codecs++;
+		info = &codec_info->codecs[codec_info->total_codecs++];
+		info->np = codec;
+		info->prefix = subnode->name;
+		ret = snd_soc_of_get_dai_name(subnode, &info->dai_name);
+		if (ret)
+			goto err_subnode;
+		info->mclk = mclk;
+		ret = of_property_read_u32(subnode, "mclk-index",
+						&info->mclk_index);
+		if (ret)
+			info->mclk_index = 0;
+		if (of_property_read_bool(subnode, "frame-master")) {
+			if (codec_info->frame_master_idx != -1) {
+				ret = -EINVAL;
+				goto err_subnode;
+			}
+			codec_info->frame_master_idx = j;
+		}
+		if (of_property_read_bool(subnode, "bitclock-master")) {
+			if (codec_info->bitclock_master_idx != -1) {
+				ret = -EINVAL;
+				goto err_subnode;
+			}
+			codec_info->bitclock_master_idx = j;
+		}
+		j++;
 	}
-	if (!link->num_codecs) {
+
+	return 0;
+
+err_subnode:
+	of_node_put(subnode);
+	return ret;
+}
+
+static int pistachio_card_parse_of_i2s_common(struct device_node *node,
+	struct pistachio_card *pbc, struct pistachio_i2s *i2s,
+	struct snd_soc_dai_link *link,
+	struct pistachio_i2s_codec_info *codec_info,
+	struct pistachio_i2s_mclk_fs_info *i2s_mclk_info,
+	struct pistachio_i2s_mclk_fs_info *dac_mclk_info)
+{
+	int ret, i;
+	unsigned int initial_codecs = codec_info->total_codecs, size;
+	struct pistachio_i2s_codec_info_s *codecs;
+	struct pistachio_i2s_mclk *mclk;
+
+	codecs = &codec_info->codecs[initial_codecs];
+
+	ret = pistachio_card_parse_of_i2s_codecs(node, pbc, codec_info,
+					i2s_mclk_info, dac_mclk_info);
+	i2s->num_codecs = codec_info->total_codecs - initial_codecs;
+	if (ret)
+		goto err_codec_info;
+
+	mclk = &i2s->mclk_a;
+
+	if (i2s_mclk_info->num_fs_rates) {
+		mclk->mclk = &pbc->i2s_mclk;
+		mclk->num_fs_rates = i2s_mclk_info->num_fs_rates;
+		size = sizeof(*mclk->fs_rates) * mclk->num_fs_rates;
+		mclk->fs_rates = devm_kzalloc(pbc->card.dev, size,
+							GFP_KERNEL);
+		if (!mclk->fs_rates) {
+			ret = -ENOMEM;
+			goto err_codec_info;
+		}
+		memcpy(mclk->fs_rates, i2s_mclk_info->fs_rates, size);
+		mclk = &i2s->mclk_b;
+	}
+
+	if (dac_mclk_info->num_fs_rates) {
+		mclk->mclk = &pbc->dac_mclk;
+		mclk->num_fs_rates = dac_mclk_info->num_fs_rates;
+		size = sizeof(*mclk->fs_rates) * mclk->num_fs_rates;
+		mclk->fs_rates = devm_kzalloc(pbc->card.dev, size,
+							GFP_KERNEL);
+		if (!mclk->fs_rates) {
+			ret = -ENOMEM;
+			goto err_codec_info;
+		}
+		memcpy(mclk->fs_rates, dac_mclk_info->fs_rates, size);
+	}
+
+	if (!i2s->num_codecs) {
 		link->codec_dai_name = "snd-soc-dummy-dai";
 		link->codec_name = "snd-soc-dummy";
-		link->codecs = NULL;
+		return 0;
 	}
-	link->init = pistachio_card_i2s_in_link_init;
-	link->ops = &pistachio_card_i2s_in_ops;
 
-	*i2s_in_master = of_parse_phandle(node, "clock-master", 0);
+	i2s->codecs = devm_kzalloc(pbc->card.dev,
+		sizeof(*i2s->codecs) * i2s->num_codecs, GFP_KERNEL);
+	if (!i2s->codecs) {
+		ret = -ENOMEM;
+		goto err_codec_info;
+	}
 
-	return link->num_codecs;
+	for (i = 0; i < i2s->num_codecs; i++) {
+		i2s->codecs[i].mclk = codecs[i].mclk;
+		i2s->codecs[i].mclk_index = codecs[i].mclk_index;
+	}
+
+	i2s->components = devm_kzalloc(pbc->card.dev,
+		sizeof(*i2s->components) * i2s->num_codecs, GFP_KERNEL);
+	if (!i2s->components) {
+		ret = -ENOMEM;
+		goto err_codec_info;
+	}
+
+	for (i = 0; i < i2s->num_codecs; i++) {
+		i2s->components[i].dai_name = codecs[i].dai_name;
+		i2s->components[i].of_node = codecs[i].np;
+	}
+
+	link->codecs = i2s->components;
+	link->num_codecs = i2s->num_codecs;
+
+	return 0;
+
+err_codec_info:
+	for (i = 0; i < i2s->num_codecs; i++)
+		of_node_put(codecs[i].np);
+
+	return ret;
+}
+
+static int pistachio_card_parse_of_i2s(struct device_node *i2s_out_np,
+	struct device_node *i2s_in_np, struct pistachio_card *pbc,
+	struct snd_soc_dai_link *links,
+	struct pistachio_i2s_codec_info *codec_info,
+	bool i2s_loopback)
+{
+	int ret;
+	struct device *dev = pbc->card.dev;
+	unsigned int fmt;
+	struct device_node *np;
+	struct pistachio_i2s_mclk_fs_info i2s_mclk_info, dac_mclk_info;
+
+	pbc->i2s_mclk.max_rate = PISTACHIO_I2S_MCLK_MAX_FREQ;
+	pbc->dac_mclk.max_rate = PISTACHIO_DAC_MCLK_MAX_FREQ;
+
+	codec_info->bitclock_master_idx = -1;
+	codec_info->frame_master_idx = -1;
+
+	if (i2s_out_np) {
+		pbc->i2s_out = devm_kzalloc(dev, sizeof(*pbc->i2s_out),
+						GFP_KERNEL);
+		if (!pbc->i2s_out)
+			return -ENOMEM;
+
+		pbc->i2s_out->output.start_at.enable =
+				PISTACHIO_EVT_ENABLE_I2S_OUT;
+		pbc->i2s_out->output.start_at.dummy_frames = 1;
+		spin_lock_init(&pbc->i2s_out->output.start_at.lock);
+
+		links->name = links->stream_name = "pistachio-i2s-out";
+
+		np = of_parse_phandle(i2s_out_np, "cpu-dai", 0);
+		if (!np)
+			return -EINVAL;
+
+		links->cpu_of_node = np;
+		links->platform_of_node = np;
+
+		fmt = snd_soc_of_parse_daifmt(i2s_out_np, NULL, NULL, NULL);
+		fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
+		fmt |= SND_SOC_DAIFMT_CBS_CFS;
+		links->dai_fmt = fmt;
+
+		/*
+		 * Internal i2s out controller uses i2s_mclk and
+		 * accepts 256fs,384fs
+		 */
+		i2s_mclk_info.fs_rates[0] = 256;
+		i2s_mclk_info.fs_rates[1] = 384;
+		i2s_mclk_info.num_fs_rates = 2;
+		dac_mclk_info.num_fs_rates = 0;
+
+		ret = pistachio_card_parse_of_i2s_common(i2s_out_np, pbc,
+				&pbc->i2s_out->i2s, links, codec_info,
+				&i2s_mclk_info, &dac_mclk_info);
+		if (ret)
+			return ret;
+
+		links->init = pistachio_card_i2s_out_link_init;
+		links->ops = &pistachio_card_i2s_out_ops;
+
+		links++;
+	}
+
+	if (i2s_in_np) {
+		pbc->i2s_in = devm_kzalloc(dev, sizeof(*pbc->i2s_in),
+						GFP_KERNEL);
+		if (!pbc->i2s_in)
+			return -ENOMEM;
+
+		links->name = links->stream_name = "pistachio-i2s-in";
+
+		np = of_parse_phandle(i2s_in_np, "cpu-dai", 0);
+		if (!np)
+			return -EINVAL;
+
+		links->cpu_of_node = np;
+		links->platform_of_node = np;
+
+		fmt = snd_soc_of_parse_daifmt(i2s_in_np, NULL, NULL, NULL);
+		fmt &= ~SND_SOC_DAIFMT_MASTER_MASK;
+		pbc->i2s_in->fmt = fmt;
+
+		i2s_mclk_info.num_fs_rates = 0;
+		dac_mclk_info.num_fs_rates = 0;
+
+		ret = pistachio_card_parse_of_i2s_common(i2s_in_np, pbc,
+				&pbc->i2s_in->i2s, links, codec_info,
+				&i2s_mclk_info, &dac_mclk_info);
+		if (ret)
+			return ret;
+
+		if (i2s_loopback) {
+			pbc->i2s_in->frame_master =
+					PISTACHIO_CLOCK_MASTER_LOOPBACK;
+			pbc->i2s_in->bitclock_master =
+					PISTACHIO_CLOCK_MASTER_LOOPBACK;
+		} else if ((codec_info->bitclock_master_idx == -1) ||
+				(codec_info->frame_master_idx == -1)) {
+			pbc->i2s_in->frame_master =
+					PISTACHIO_CLOCK_MASTER_EXT;
+			pbc->i2s_in->bitclock_master =
+					PISTACHIO_CLOCK_MASTER_EXT;
+		} else {
+			pbc->i2s_in->frame_master =
+					codec_info->frame_master_idx;
+			pbc->i2s_in->bitclock_master =
+					codec_info->bitclock_master_idx;
+		}
+
+		links->init = pistachio_card_i2s_in_link_init;
+
+		/*
+		 * If no mclks are used by i2s in, there is nothing for
+		 * the ops callbacks to do, so leave this as NULL
+		 */
+		if (pbc->i2s_in->i2s.mclk_a.mclk)
+			links->ops = &pistachio_card_i2s_in_ops;
+	}
+
+	return 0;
+}
+
+static int pistachio_card_parse_of_confs(struct pistachio_card *pbc,
+			struct pistachio_i2s_codec_info *codec_info,
+			struct snd_soc_dai_link *parallel_out)
+{
+	int i, j, n;
+	unsigned int size;
+	struct pistachio_i2s_codec_info_s *codecs;
+	struct snd_soc_codec_conf *conf, *c;
+
+	n = codec_info->unique_codecs;
+	if (parallel_out)
+		n++;
+	codecs = codec_info->codecs;
+
+	size = sizeof(*pbc->card.codec_conf) * n;
+	pbc->card.codec_conf = devm_kzalloc(pbc->card.dev, size, GFP_KERNEL);
+	if (!pbc->card.codec_conf)
+		return -ENOMEM;
+
+	conf = pbc->card.codec_conf;
+
+	for (i = 0; i < codec_info->total_codecs; i++) {
+		for (j = 0; j < i; j++)
+			if (codecs[j].np == codecs[i].np)
+				break;
+		if (j == i) {
+			conf->of_node = codecs[i].np;
+			conf->name_prefix = codecs[i].prefix;
+			conf++;
+		}
+	}
+
+	if (parallel_out) {
+		conf->of_node = parallel_out->codecs[0].of_node;
+		conf->name_prefix = PISTACHIO_INTERNAL_DAC_PREFIX;
+	}
+
+	pbc->card.num_configs = n;
+
+	for (i = 0; i < n; i++) {
+		conf = &pbc->card.codec_conf[i];
+		for (j = i + 1; j < n; j++) {
+			c = &pbc->card.codec_conf[j];
+			if (!strcasecmp(conf->name_prefix, c->name_prefix)) {
+				dev_err(pbc->card.dev, "Prefix clash: %s\n",
+						conf->name_prefix);
+				return -EINVAL;
+			}
+		}
+	}
+
+	return 0;
 }
 
 static int pistachio_card_parse_of(struct device_node *node,
-	struct pistachio_card_data *pbc, struct device_node **i2s_out_master,
-	struct device_node **i2s_in_master)
+				struct pistachio_card *pbc)
 {
-	int ret;
-	struct device_node *np;
-	struct snd_soc_dai_link *dai_link = pbc->dai_links_st;
-	struct snd_soc_dai_link_component *component = pbc->codec_st;
+	int ret = 0;
+	struct device_node *spdif_out_np, *spdif_in_np, *parallel_out_np;
+	struct device_node *i2s_out_np, *i2s_in_np, *event_np;
+	struct snd_soc_dai_link *link, *prl_out = NULL;
+	enum of_gpio_flags flags;
+	struct pistachio_i2s_codec_info i2s_codec_info;
+	bool i2s_loopback;
 
-	if (!node)
+	pbc->periph_regs = syscon_regmap_lookup_by_phandle(node,
+						"img,cr-periph");
+	if (IS_ERR(pbc->periph_regs))
+		return PTR_ERR(pbc->periph_regs);
+
+	event_np = of_parse_phandle(node, "img,event-timer", 0);
+	if (!event_np)
 		return -EINVAL;
+	pbc->event_timer_np = event_np;
+	pbc->event_timer = pistachio_evt_get(event_np);
+	if (IS_ERR(pbc->event_timer))
+		return PTR_ERR(pbc->event_timer);
 
-	pbc->card.name = "pistachio-card";
-
-	/* The off-codec widgets */
-	if (of_property_read_bool(node, "widgets")) {
+	if (of_property_read_bool(node, "img,widgets")) {
 		ret = snd_soc_of_parse_audio_simple_widgets(&pbc->card,
-					"widgets");
+					"img,widgets");
 		if (ret)
 			return ret;
 	}
 
-	/* DAPM routes */
-	if (of_property_read_bool(node, "routing")) {
+	if (of_property_read_bool(node, "img,routing")) {
 		ret = snd_soc_of_parse_audio_routing(&pbc->card,
-					"routing");
+					"img,routing");
 		if (ret)
 			return ret;
 	}
 
-	np = of_get_child_by_name(node, "spdif-out");
-	if (np) {
-		ret = pistachio_card_parse_of_spdif_out(np, pbc, dai_link);
+	spdif_out_np = of_get_child_by_name(node, "spdif-out");
+	if (spdif_out_np)
+		pbc->card.num_links++;
+
+	spdif_in_np = of_get_child_by_name(node, "spdif-in");
+	if (spdif_in_np)
+		pbc->card.num_links++;
+
+	parallel_out_np = of_get_child_by_name(node, "parallel-out");
+	if (parallel_out_np)
+		pbc->card.num_links++;
+
+	i2s_out_np = of_get_child_by_name(node, "i2s-out");
+	if (i2s_out_np)
+		pbc->card.num_links++;
+
+	i2s_in_np = of_get_child_by_name(node, "i2s-in");
+	if (i2s_in_np)
+		pbc->card.num_links++;
+
+	i2s_loopback = of_property_read_bool(node, "img,i2s-clk-loopback");
+	if (i2s_loopback && (!i2s_out_np || !i2s_in_np)) {
+		ret = -EINVAL;
+		goto end;
+	}
+
+	if (!pbc->card.num_links) {
+		ret = -EINVAL;
+		goto end;
+	}
+
+	pbc->card.dai_link = devm_kzalloc(pbc->card.dev,
+		sizeof(*pbc->card.dai_link) * pbc->card.num_links, GFP_KERNEL);
+	if (!pbc->card.dai_link) {
+		ret = -ENOMEM;
+		goto end;
+	}
+
+	i2s_codec_info.total_codecs = 0;
+	i2s_codec_info.unique_codecs = 0;
+
+	link = pbc->card.dai_link;
+
+	if (spdif_out_np) {
+		ret = pistachio_card_parse_of_spdif_out(spdif_out_np, pbc,
+							link);
 		if (ret)
-			return ret;
-		pbc->dai_links[PISTACHIO_LINK_SPDIF_OUT] = dai_link++;
+			goto end;
+		link++;
 	}
 
-	np = of_get_child_by_name(node, "spdif-in");
-	if (np) {
-		ret = pistachio_card_parse_of_spdif_in(np, pbc, dai_link);
+	if (spdif_in_np) {
+		ret = pistachio_card_parse_of_spdif_in(spdif_in_np, pbc,
+							link);
 		if (ret)
-			return ret;
-		pbc->dai_links[PISTACHIO_LINK_SPDIF_IN] = dai_link++;
+			goto end;
+		link++;
 	}
 
-	np = of_get_child_by_name(node, "parallel-out");
-	if (np) {
-		ret = pistachio_card_parse_of_parallel_out(np, pbc,
-				dai_link, component);
-		if (ret < 0)
-			return ret;
-		pbc->dai_links[PISTACHIO_LINK_PRL_OUT] = dai_link++;
-		component += ret;
+	if (parallel_out_np) {
+		ret = pistachio_card_parse_of_parallel_out(parallel_out_np,
+								pbc, link);
+		if (ret)
+			goto end;
+		prl_out = link;
+		link++;
 	}
 
-	np = of_get_child_by_name(node, "i2s-out");
-	if (np) {
-		ret = pistachio_card_parse_of_i2s_out(np, pbc,
-				dai_link, component, i2s_out_master);
-		if (ret < 0)
-			return ret;
-		pbc->dai_links[PISTACHIO_LINK_I2S_OUT] = dai_link++;
-		component += ret;
+	if (i2s_out_np || i2s_in_np) {
+		ret = pistachio_card_parse_of_i2s(i2s_out_np, i2s_in_np, pbc,
+					link, &i2s_codec_info, i2s_loopback);
+		if (ret)
+			goto end;
 	}
 
-	np = of_get_child_by_name(node, "i2s-in");
-	if (np) {
-		ret = pistachio_card_parse_of_i2s_in(np, pbc,
-				dai_link, component, i2s_in_master);
-		if (ret < 0)
-			return ret;
-		pbc->dai_links[PISTACHIO_LINK_I2S_IN] = dai_link++;
+	ret = pistachio_card_parse_of_confs(pbc, &i2s_codec_info, prl_out);
+	if (ret)
+		goto end;
+
+	pbc->hp_jack_gpio.gpio = of_get_named_gpio_flags(node,
+					"img,hp-det-gpio", 0, &flags);
+	pbc->hp_jack_gpio.invert = !!(flags & OF_GPIO_ACTIVE_LOW);
+	if (pbc->hp_jack_gpio.gpio == -EPROBE_DEFER) {
+		ret = -EPROBE_DEFER;
+		goto end;
 	}
 
-	pbc->hp_jack_gpio.gpio = of_get_named_gpio(node,
-				"img,hp-det-gpio", 0);
-	if (pbc->hp_jack_gpio.gpio == -EPROBE_DEFER)
-		return -EPROBE_DEFER;
+	pbc->mute_gpio = of_get_named_gpio_flags(node, "img,mute-gpio", 0,
+						&flags);
+	pbc->mute_gpio_inverted = !!(flags & OF_GPIO_ACTIVE_LOW);
+	if (pbc->mute_gpio_inverted == -EPROBE_DEFER) {
+		ret = -EPROBE_DEFER;
+		goto end;
+	}
 
-	return dai_link - pbc->dai_links_st;
+end:
+	if (spdif_out_np)
+		of_node_put(spdif_out_np);
+	if (spdif_in_np)
+		of_node_put(spdif_in_np);
+	if (parallel_out_np)
+		of_node_put(parallel_out_np);
+	if (i2s_out_np)
+		of_node_put(i2s_out_np);
+	if (i2s_in_np)
+		of_node_put(i2s_in_np);
+
+	return ret;
 }
 
-/* Decrease the reference count of the device nodes */
-static void pistachio_card_unref(struct platform_device *pdev,
-	struct device_node *i2s_out_master, struct device_node *i2s_in_master)
+static void pistachio_card_unref(struct pistachio_card *pbc)
 {
-	struct snd_soc_card *card = platform_get_drvdata(pdev);
-	struct snd_soc_dai_link *dai_link;
-	struct device_node *np;
-	const struct device_node *npc;
 	int i, j;
+	struct snd_soc_dai_link *link;
 
-	dai_link = card->dai_link;
+	if (pbc->event_timer_np)
+		of_node_put(pbc->event_timer_np);
 
-	for (i = 0; i < card->num_links; i++, dai_link++) {
+	link = pbc->card.dai_link;
+	if (!link)
+		return;
 
-		np = (struct device_node *) dai_link->cpu_of_node;
-		if (np)
-			of_node_put(np);
-
-		if (dai_link->codecs) {
-			for (j = 0; j < dai_link->num_codecs; j++) {
-				npc = dai_link->codecs[j].of_node;
-				np = (struct device_node *)npc;
-				if (np)
-					of_node_put(np);
-			}
-		}
+	for (i = 0; i < pbc->card.num_links; i++, link++) {
+		if (link->cpu_of_node)
+			of_node_put(link->cpu_of_node);
+		for (j = 0; j < link->num_codecs; j++)
+			of_node_put(link->codecs[j].of_node);
 	}
 }
 
 static int pistachio_card_init_clk(struct device *dev, char *name,
-		struct clk **pclk, unsigned long *rate)
+					struct clk **pclk)
 {
 	struct clk *clk;
 	int ret;
 
 	clk = devm_clk_get(dev, name);
-	if (IS_ERR(clk)) {
-		ret = PTR_ERR(clk);
-		return ret;
-	}
+	if (IS_ERR(clk))
+		return PTR_ERR(clk);
 
 	ret = clk_prepare_enable(clk);
 	if (ret)
 		return ret;
-
-	*rate = clk_get_rate(clk);
 
 	*pclk = clk;
 
 	return 0;
 }
 
-static int pistachio_card_info_event_time(struct snd_kcontrol *kcontrol,
+static int pistachio_card_init_rates(struct pistachio_card *pbc)
+{
+	unsigned int rate;
+	int ret;
+
+	rate = PLL_RATE_11025_22050_44100_64000_88200_176400;
+	ret = clk_set_rate(pbc->audio_pll, rate);
+	if (ret)
+		return ret;
+	pbc->audio_pll_rate = rate;
+
+	rate = PISTACHIO_MIN_MCLK_FREQ;
+	ret = clk_set_rate(pbc->i2s_mclk.mclk, rate);
+	if (ret)
+		return ret;
+	pbc->i2s_mclk.cur_rate = rate;
+	ret = clk_set_rate(pbc->dac_mclk.mclk, rate);
+	if (ret)
+		return ret;
+	pbc->dac_mclk.cur_rate = rate;
+
+	return 0;
+}
+
+static int pistachio_card_info_timespec(struct snd_kcontrol *kcontrol,
 		struct snd_ctl_elem_info *uinfo)
 {
-	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER64;
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
 	uinfo->count = 2;
-	uinfo->value.integer64.min = 0;
-	uinfo->value.integer64.max = LLONG_MAX;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = LONG_MAX;
 
 	return 0;
 }
@@ -1513,36 +1546,697 @@ static int pistachio_card_get_event_time(struct snd_kcontrol *kcontrol,
 				  struct snd_ctl_elem_value *uc)
 {
 	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(card);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
 	struct timespec ts;
 
-	pistachio_evt_read(pbc->event_timer, &ts);
+	pistachio_evt_get_time_ts(pbc->event_timer, &ts);
 
-	uc->value.integer64.value[0] = ts.tv_sec;
-	uc->value.integer64.value[1] = ts.tv_nsec;
+	uc->value.integer.value[0] = ts.tv_sec;
+	uc->value.integer.value[1] = ts.tv_nsec;
 
 	return 0;
 }
 
-static struct snd_kcontrol_new pistachio_bub_controls[] = {
+static int pistachio_card_info_source(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_info *uinfo)
+{
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 1;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = PISTACHIO_EVT_NUM_SOURCES - 1;
+
+	return 0;
+}
+
+static int pistachio_card_set_source(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol,
+				  int id)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
+
+	return pistachio_evt_set_source(pbc->event_timer, id,
+		ucontrol->value.integer.value[0]);
+}
+
+static int pistachio_card_set_source_a(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	return pistachio_card_set_source(kcontrol, ucontrol, 0);
+}
+
+static int pistachio_card_set_source_b(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	return pistachio_card_set_source(kcontrol, ucontrol, 1);
+}
+
+static int pistachio_card_get_source(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol,
+				  int id)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
+	enum pistachio_evt_source source;
+	int ret;
+
+	ret = pistachio_evt_get_source(pbc->event_timer, id, &source);
+
+	if (!ret)
+		ucontrol->value.integer.value[0] = source;
+
+	return ret;
+}
+
+static int pistachio_card_get_source_a(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	return pistachio_card_get_source(kcontrol, ucontrol, 0);
+}
+
+static int pistachio_card_get_source_b(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	return pistachio_card_get_source(kcontrol, ucontrol, 1);
+}
+
+void pistachio_card_sample_rate_notify(int id, void *context)
+{
+	struct pistachio_card *pbc = context;
+
+	if (pbc->sample_rate_ids[id])
+		snd_ctl_notify(pbc->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
+				pbc->sample_rate_ids[id]);
+}
+
+void pistachio_card_sample_rate_notify_a(void *context)
+{
+	pistachio_card_sample_rate_notify(0, context);
+}
+
+void pistachio_card_sample_rate_notify_b(void *context)
+{
+	pistachio_card_sample_rate_notify(1, context);
+}
+
+void pistachio_card_phase_difference_notify(void *context)
+{
+	struct pistachio_card *pbc = context;
+
+	if (pbc->phase_difference_id)
+		snd_ctl_notify(pbc->card.snd_card, SNDRV_CTL_EVENT_MASK_VALUE,
+				pbc->phase_difference_id);
+}
+
+static int pistachio_card_get_sample_period(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol,
+				  int id)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
+	int ret;
+	u32 val, freq, nsec;
+	u64 temp;
+
+	pbc->sample_rate_ids[id] = &kcontrol->id;
+
+	ret = pistachio_evt_get_sample_rate(pbc->event_timer, id, &val, &freq,
+				pistachio_card_sample_rate_notify_a, pbc);
+
+	if (!ret) {
+		temp = ((u64)val * NSEC_PER_SEC) + (freq / 2);
+		do_div(temp, freq);
+		nsec = do_div(temp, NSEC_PER_SEC);
+		ucontrol->value.integer.value[0] = temp;
+		ucontrol->value.integer.value[1] = nsec;
+	}
+
+	return ret;
+}
+
+static int pistachio_card_get_sample_period_a(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	return pistachio_card_get_sample_period(kcontrol, ucontrol, 0);
+}
+
+static int pistachio_card_get_sample_period_b(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	return pistachio_card_get_sample_period(kcontrol, ucontrol, 1);
+}
+
+static int pistachio_card_info_sample_rate(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_info *uinfo)
+{
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 1;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = LONG_MAX;
+
+	return 0;
+}
+
+static int pistachio_card_get_sample_rate(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol,
+				  int id)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
+	int ret;
+	u32 val, freq, rate;
+
+	pbc->sample_rate_ids[id] = &kcontrol->id;
+
+	ret = pistachio_evt_get_sample_rate(pbc->event_timer, id, &val, &freq,
+				pistachio_card_sample_rate_notify_b, pbc);
+
+	if (!ret) {
+		if (!val)
+			return -EINVAL;
+		rate = DIV_ROUND_CLOSEST(freq, val);
+		ucontrol->value.integer.value[0] = rate;
+	}
+
+	return ret;
+}
+
+static int pistachio_card_get_sample_rate_a(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	return pistachio_card_get_sample_rate(kcontrol, ucontrol, 0);
+}
+
+static int pistachio_card_get_sample_rate_b(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	return pistachio_card_get_sample_rate(kcontrol, ucontrol, 1);
+}
+
+static int pistachio_card_get_phase_difference(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
+	int ret;
+	u32 val, freq, nsec;
+	u64 temp;
+
+	pbc->phase_difference_id = &kcontrol->id;
+
+	ret = pistachio_evt_get_phase_difference(pbc->event_timer, &val,
+			&freq, pistachio_card_phase_difference_notify, pbc);
+
+	if (!ret) {
+		temp = ((u64)val * NSEC_PER_SEC) + (freq / 2);
+		do_div(temp, freq);
+		nsec = do_div(temp, NSEC_PER_SEC);
+		ucontrol->value.integer.value[0] = temp;
+		ucontrol->value.integer.value[1] = nsec;
+	}
+
+	return ret;
+}
+
+static int pistachio_card_get_mute(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
+	int ret;
+
+	ret = gpio_get_value_cansleep(pbc->mute_gpio);
+	if (ret < 0)
+		return ret;
+	else if (pbc->mute_gpio_inverted)
+		ucontrol->value.integer.value[0] = !ret;
+	else
+		ucontrol->value.integer.value[0] = !!ret;
+
+	return 0;
+}
+
+static int pistachio_card_set_mute(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
+	int val;
+
+	if (pbc->mute_gpio_inverted)
+		val = !ucontrol->value.integer.value[0];
+	else
+		val = ucontrol->value.integer.value[0];
+
+	gpio_set_value_cansleep(pbc->mute_gpio, val);
+
+	return 0;
+}
+
+static int pistachio_card_info_sample_rates(struct snd_kcontrol *kcontrol,
+		struct snd_ctl_elem_info *uinfo)
+{
+	uinfo->type = SNDRV_CTL_ELEM_TYPE_INTEGER;
+	uinfo->count = 2;
+	uinfo->value.integer.min = 0;
+	uinfo->value.integer.max = 192000;
+
+	return 0;
+}
+
+static int pistachio_card_set_sample_rates_mclk(struct pistachio_card *pbc,
+		struct pistachio_mclk *mclk, unsigned int i2s_out_rate,
+		unsigned int i2s_in_rate)
+{
+	struct pistachio_i2s_mclk *mclk_a, *mclk_b;
+	unsigned int rate_a, rate_b;
+	int ret = 0;
+
+	mclk_a = NULL;
+	mclk_b = NULL;
+	rate_a = i2s_out_rate;
+	rate_b = i2s_in_rate;
+
+	if (i2s_out_rate) {
+		if (pbc->i2s_out->i2s.mclk_a.mclk == mclk)
+			mclk_a = &pbc->i2s_out->i2s.mclk_a;
+		else if (pbc->i2s_out->i2s.mclk_b.mclk == mclk)
+			mclk_a = &pbc->i2s_out->i2s.mclk_b;
+	}
+	if (i2s_in_rate) {
+		if (pbc->i2s_in->i2s.mclk_a.mclk == mclk)
+			mclk_b = &pbc->i2s_in->i2s.mclk_a;
+		else if (pbc->i2s_in->i2s.mclk_b.mclk == mclk)
+			mclk_b = &pbc->i2s_in->i2s.mclk_b;
+	}
+	if (!mclk_a) {
+		mclk_a = mclk_b;
+		rate_a = rate_b;
+		mclk_b = NULL;
+	}
+
+	if (mclk_a) {
+		ret = pistachio_card_update_mclk(pbc, mclk_a, mclk_b, rate_a,
+						rate_b);
+	}
+
+	return ret;
+}
+
+static int pistachio_card_set_sample_rates(struct snd_kcontrol *kcontrol,
+				  struct snd_ctl_elem_value *ucontrol)
+{
+	struct snd_soc_card *card = snd_kcontrol_chip(kcontrol);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
+	int ret;
+	unsigned int pll_rate, i2s_out_rate = 0, i2s_in_rate = 0;
+
+	if (pbc->i2s_out)
+		i2s_out_rate = ucontrol->value.integer.value[0];
+	if (pbc->i2s_in && pbc->i2s_in->i2s.mclk_a.mclk)
+		i2s_in_rate = ucontrol->value.integer.value[1];
+
+	if (!i2s_out_rate && !i2s_in_rate)
+		return 0;
+
+	pll_rate = 0;
+
+	if (i2s_out_rate) {
+		ret = pistachio_card_get_pll_rate(i2s_out_rate);
+		if (ret < 0)
+			return ret;
+		pll_rate = ret;
+	}
+
+	if (i2s_in_rate) {
+		ret = pistachio_card_get_pll_rate(i2s_in_rate);
+		if (ret < 0)
+			return ret;
+		if (pll_rate && (ret != pll_rate))
+			return -EINVAL;
+		pll_rate = ret;
+	}
+
+	mutex_lock(&pbc->rate_mutex);
+
+	if (pbc->audio_pll_rate != pll_rate) {
+		ret = pistachio_card_set_pll_rate(pbc, pll_rate);
+		if (ret) {
+			mutex_unlock(&pbc->rate_mutex);
+			return ret;
+		}
+	}
+
+	ret = pistachio_card_set_sample_rates_mclk(pbc, &pbc->i2s_mclk,
+						i2s_out_rate, i2s_in_rate);
+	if (ret) {
+		mutex_unlock(&pbc->rate_mutex);
+		return ret;
+	}
+
+	ret = pistachio_card_set_sample_rates_mclk(pbc, &pbc->dac_mclk,
+						i2s_out_rate, i2s_in_rate);
+
+	mutex_unlock(&pbc->rate_mutex);
+
+	return ret;
+}
+
+static struct snd_kcontrol_new pistachio_controls[] = {
 	{
 		.access = SNDRV_CTL_ELEM_ACCESS_READ |
 			SNDRV_CTL_ELEM_ACCESS_VOLATILE,
 		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
 		.name = "Event Time",
-		.info = pistachio_card_info_event_time,
+		.info = pistachio_card_info_timespec,
 		.get = pistachio_card_get_event_time
+	},
+	{
+		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
+		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+		.name = "Measurement Source A",
+		.info = pistachio_card_info_source,
+		.get = pistachio_card_get_source_a,
+		.put = pistachio_card_set_source_a
+	},
+	{
+		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
+		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+		.name = "Measurement Source B",
+		.info = pistachio_card_info_source,
+		.get = pistachio_card_get_source_b,
+		.put = pistachio_card_set_source_b
+	},
+	{
+		.access = SNDRV_CTL_ELEM_ACCESS_READ |
+			SNDRV_CTL_ELEM_ACCESS_VOLATILE,
+		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+		.name = "Sample Rate A",
+		.info = pistachio_card_info_sample_rate,
+		.get = pistachio_card_get_sample_rate_a,
+	},
+	{
+		.access = SNDRV_CTL_ELEM_ACCESS_READ |
+			SNDRV_CTL_ELEM_ACCESS_VOLATILE,
+		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+		.name = "Sample Rate B",
+		.info = pistachio_card_info_sample_rate,
+		.get = pistachio_card_get_sample_rate_b,
+	},
+	{
+		.access = SNDRV_CTL_ELEM_ACCESS_READ |
+			SNDRV_CTL_ELEM_ACCESS_VOLATILE,
+		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+		.name = "Sample Period A",
+		.info = pistachio_card_info_timespec,
+		.get = pistachio_card_get_sample_period_a,
+	},
+	{
+		.access = SNDRV_CTL_ELEM_ACCESS_READ |
+			SNDRV_CTL_ELEM_ACCESS_VOLATILE,
+		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+		.name = "Sample Period B",
+		.info = pistachio_card_info_timespec,
+		.get = pistachio_card_get_sample_period_b,
+	},
+	{
+		.access = SNDRV_CTL_ELEM_ACCESS_READ |
+			SNDRV_CTL_ELEM_ACCESS_VOLATILE,
+		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+		.name = "Phase Difference",
+		.info = pistachio_card_info_timespec,
+		.get = pistachio_card_get_phase_difference,
+	},
+	{
+		.access = SNDRV_CTL_ELEM_ACCESS_WRITE,
+		.iface = SNDRV_CTL_ELEM_IFACE_CARD,
+		.name = "I2S Rates",
+		.info = pistachio_card_info_sample_rates,
+		.put = pistachio_card_set_sample_rates
 	},
 };
 
+#ifdef DEBUG
+
+static void pistachio_card_info_mclk(struct pistachio_card *pbc,
+					struct pistachio_i2s_mclk *mclk)
+{
+	struct device *dev = pbc->card.dev;
+	int i;
+
+	dev_dbg(dev, "        Min Freq: %u\n", mclk->mclk->min_rate);
+	dev_dbg(dev, "        Max Freq: %u\n", mclk->mclk->max_rate);
+	dev_dbg(dev, "        FS Rates:\n");
+
+	for (i = 0; i < mclk->num_fs_rates; i++)
+		dev_dbg(dev, "            %u\n", mclk->fs_rates[i]);
+}
+
+static void pistachio_card_info_mclks(struct pistachio_card *pbc,
+					struct pistachio_i2s *i2s)
+{
+	struct pistachio_i2s_mclk *i2s_mclk;
+	struct pistachio_i2s_mclk *dac_mclk;
+	struct device *dev = pbc->card.dev;
+
+	if (i2s->mclk_a.mclk == &pbc->i2s_mclk)
+		i2s_mclk = &i2s->mclk_a;
+	else if (pbc->i2s_in->i2s.mclk_b.mclk == &pbc->i2s_mclk)
+		i2s_mclk = &i2s->mclk_b;
+	else
+		i2s_mclk = NULL;
+
+	if (i2s_mclk) {
+		dev_dbg(dev, "    I2S MCLK\n");
+		pistachio_card_info_mclk(pbc, i2s_mclk);
+	} else {
+		dev_dbg(dev, "    I2S MCLK NOT USED\n");
+	}
+
+	dev_dbg(dev, "\n");
+
+	if (i2s->mclk_a.mclk == &pbc->dac_mclk)
+		dac_mclk = &i2s->mclk_a;
+	else if (i2s->mclk_b.mclk == &pbc->dac_mclk)
+		dac_mclk = &i2s->mclk_b;
+	else
+		dac_mclk = NULL;
+
+	if (dac_mclk) {
+		dev_dbg(dev, "    DAC MCLK\n");
+		pistachio_card_info_mclk(pbc, dac_mclk);
+	} else {
+		dev_dbg(dev, "    DAC MCLK NOT USED\n");
+	}
+}
+
+static void pistachio_card_info_i2s_out(struct pistachio_card *pbc,
+					struct snd_soc_dai_link *link)
+{
+	int i, j;
+	struct snd_soc_dai_link_component *components;
+	struct snd_soc_codec_conf *confs;
+	struct device *dev = pbc->card.dev;
+	char *text;
+
+	components = pbc->i2s_out->i2s.components;
+	confs = pbc->card.codec_conf;
+
+	dev_dbg(dev, "I2S OUT\n");
+	dev_dbg(dev, "\n");
+	if (pbc->i2s_in && (pbc->i2s_in->frame_master ==
+			PISTACHIO_CLOCK_MASTER_LOOPBACK))
+		text = "(Dual Frame + Bit Clock Master)";
+	else
+		text = "(Frame + Bit Clock Master)";
+	dev_dbg(dev, "    CPU DAI\n");
+	dev_dbg(dev, "        i2s-out (%s) %s\n",
+		link->cpu_of_node->name, text);
+	dev_dbg(dev, "\n");
+	dev_dbg(dev, "    CODECS\n");
+
+	for (i = 0; i < pbc->i2s_out->i2s.num_codecs; i++) {
+		for (j = 0; j < pbc->card.num_configs; j++)
+			if (confs[j].of_node == components[i].of_node)
+				break;
+
+		dev_dbg(dev, "        %s (%s) (%s)\n", confs[j].name_prefix,
+			confs[j].of_node->name,
+			components[i].dai_name);
+	}
+	dev_dbg(dev, "\n");
+
+	pistachio_card_info_mclks(pbc, &pbc->i2s_out->i2s);
+
+	dev_dbg(dev, "\n");
+
+	if ((link->dai_fmt & SND_SOC_DAIFMT_FORMAT_MASK) == SND_SOC_DAIFMT_I2S)
+		text = "I2S";
+	else
+		text = "Left Justified";
+	dev_dbg(dev, "    Format: %s\n", text);
+
+	if ((link->dai_fmt & SND_SOC_DAIFMT_CLOCK_MASK) == SND_SOC_DAIFMT_CONT)
+		text = "Yes";
+	else
+		text = "No";
+	dev_dbg(dev, "    Continuous Clock: %s\n", text);
+
+	dev_dbg(dev, "\n");
+}
+
+static void pistachio_card_info_i2s_in(struct pistachio_card *pbc,
+					struct snd_soc_dai_link *link)
+{
+	int i, j;
+	struct snd_soc_dai_link_component *components;
+	struct snd_soc_codec_conf *confs;
+	char *text;
+	struct device *dev = pbc->card.dev;
+
+	components = pbc->i2s_in->i2s.components;
+	confs = pbc->card.codec_conf;
+
+	dev_dbg(dev, "I2S IN\n");
+	dev_dbg(dev, "\n");
+	dev_dbg(dev, "    CPU DAI\n");
+	dev_dbg(dev, "        i2s-in (%s)\n",
+		link->cpu_of_node->name);
+	dev_dbg(dev, "\n");
+	dev_dbg(dev, "    CODECS\n");
+
+	for (i = 0; i < pbc->i2s_out->i2s.num_codecs; i++) {
+		for (j = 0; j < pbc->card.num_configs; j++)
+			if (confs[j].of_node == components[i].of_node)
+				break;
+
+		if (i == pbc->i2s_in->frame_master)
+			if (i == pbc->i2s_in->bitclock_master)
+				text = "(Frame + Bit Clock Master)";
+			else
+				text = "(Frame Master)";
+		else
+			if (i == pbc->i2s_in->bitclock_master)
+				text = "(Bitclock Master)";
+			else
+				text = "";
+
+		dev_dbg(dev, "        %s (%s) (%s) %s\n", confs[j].name_prefix,
+			confs[j].of_node->name,
+			components[i].dai_name, text);
+	}
+	dev_dbg(dev, "\n");
+
+	pistachio_card_info_mclks(pbc, &pbc->i2s_in->i2s);
+
+	dev_dbg(dev, "\n");
+
+	if ((pbc->i2s_in->fmt & SND_SOC_DAIFMT_FORMAT_MASK) ==
+			SND_SOC_DAIFMT_I2S)
+		text = "I2S";
+	else
+		text = "Left Justified";
+	dev_dbg(dev, "    Format: %s\n", text);
+
+	if ((pbc->i2s_in->fmt & SND_SOC_DAIFMT_CLOCK_MASK) ==
+			SND_SOC_DAIFMT_CONT)
+		text = "Yes";
+	else
+		text = "No";
+	dev_dbg(dev, "    Continuous Clock: %s\n", text);
+
+	dev_dbg(dev, "\n");
+}
+
+static void pistachio_card_info(struct pistachio_card *pbc)
+{
+	struct device *dev = pbc->card.dev;
+	struct snd_soc_codec_conf *conf;
+	struct snd_soc_dai_link *link;
+	char *text;
+
+	link = pbc->card.dai_link;
+
+	dev_dbg(dev, "\n");
+	dev_dbg(dev, "####################################################\n");
+	dev_dbg(dev, "\n");
+	dev_dbg(dev, "Pistachio Audio Card\n");
+	dev_dbg(dev, "\n");
+
+	if (pbc->spdif_out) {
+		dev_dbg(dev, "SPDIF OUT\n");
+		dev_dbg(dev, "\n");
+		dev_dbg(dev, "    CPU DAI\n");
+		dev_dbg(dev, "        spdif-out (%s)\n",
+			link->cpu_of_node->name);
+		dev_dbg(dev, "\n");
+		link++;
+	}
+	if (pbc->spdif_in) {
+		dev_dbg(dev, "SPDIF IN\n");
+		dev_dbg(dev, "\n");
+		dev_dbg(dev, "    CPU DAI\n");
+		dev_dbg(dev, "        spdif-in (%s)\n",
+			link->cpu_of_node->name);
+		dev_dbg(dev, "\n");
+		link++;
+	}
+	if (pbc->parallel_out) {
+		dev_dbg(dev, "PARALLEL OUT\n");
+		dev_dbg(dev, "\n");
+		dev_dbg(dev, "    CPU DAI\n");
+		dev_dbg(dev, "        parallel-out (%s)\n",
+			link->cpu_of_node->name);
+		dev_dbg(dev, "\n");
+		dev_dbg(dev, "    CODECS\n");
+		conf = &pbc->card.codec_conf[pbc->card.num_configs - 1];
+		dev_dbg(dev, "        %s (%s) (%s)\n", conf->name_prefix,
+			conf->of_node->name,
+			pbc->parallel_out->internal_dac.dai_name);
+		dev_dbg(dev, "\n");
+		link++;
+	}
+	if (pbc->i2s_out) {
+		pistachio_card_info_i2s_out(pbc, link);
+		link++;
+	}
+
+	if (pbc->i2s_in)
+		pistachio_card_info_i2s_in(pbc, link);
+
+	if (gpio_is_valid(pbc->mute_gpio)) {
+		if (pbc->mute_gpio_inverted)
+			text = "(Active Low)";
+		else
+			text = "(Active High)";
+		dev_dbg(dev, "Mute: GPIO %u %s\n", pbc->mute_gpio, text);
+	}
+	if (gpio_is_valid(pbc->hp_jack_gpio.gpio)) {
+		if (pbc->hp_jack_gpio.invert)
+			text = "(Active Low)";
+		else
+			text = "(Active High)";
+		dev_dbg(dev, "Headphone-Detect: GPIO %u %s\n",
+				pbc->hp_jack_gpio.gpio, text);
+	}
+	dev_dbg(dev, "\n");
+	dev_dbg(dev, "####################################################\n");
+	dev_dbg(dev, "\n");
+}
+
+#endif
+
 static int pistachio_card_probe(struct platform_device *pdev)
 {
-	struct pistachio_card_data *pbc;
-	struct device_node *np_event, *np = pdev->dev.of_node;
+	struct pistachio_card *pbc;
+	struct device_node *np = pdev->dev.of_node;
 	struct device *dev = &pdev->dev;
 	int ret;
-	struct device_node *i2s_out_master, *i2s_in_master, *codec_np;
-	struct snd_soc_codec_conf *codec_conf;
+	unsigned long gpio_flags;
+	struct snd_kcontrol_new *control;
+
+	if (!np || !of_device_is_available(np))
+		return -EINVAL;
 
 	pbc = devm_kzalloc(dev, sizeof(*pbc), GFP_KERNEL);
 	if (!pbc)
@@ -1550,167 +2244,49 @@ static int pistachio_card_probe(struct platform_device *pdev)
 
 	pbc->card.owner = THIS_MODULE;
 	pbc->card.dev = dev;
-
-	spin_lock_init(&pbc->parallel_out_lock);
-	spin_lock_init(&pbc->spdif_out_lock);
-	spin_lock_init(&pbc->i2s_out_lock);
-
-	pbc->hp_jack_gpio.gpio = -ENOENT;
-
-	if (!np || !of_device_is_available(np))
-		return -EINVAL;
-
-	i2s_out_master = NULL;
-	i2s_in_master = NULL;
-
-	ret = of_property_read_u32(np, "img,daughterboard", &pbc->db);
-	if (ret)
-		return ret;
-	if (pbc->db > PISTACHIO_DAUGHTERBOARD_MAX)
-		return -EINVAL;
-
-	ret = of_property_read_u32(np, "img,mclk", &pbc->mclk_source);
-	if (ret)
-		return ret;
-	if (pbc->mclk_source > PISTACHIO_MCLK_MAX)
-		return -EINVAL;
-
-	ret = of_property_read_u32(np, "img,mclk-max", &pbc->mclk_max);
-	if (ret) {
-		switch (pbc->db) {
-		case PISTACHIO_DAUGHTERBOARD_NONE:
-		case PISTACHIO_DAUGHTERBOARD_CODEC:
-			pbc->mclk_max = PCM1368A_PCM3060_MAX_MCLK;
-			break;
-		case PISTACHIO_DAUGHTERBOARD_BREAKOUT:
-			pbc->mclk_max = ULONG_MAX;
-			break;
-		default:
-			return -EINVAL;
-		};
-	}
-
-	pbc->periph_regs = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
-							    "img,cr-periph");
-	if (IS_ERR(pbc->periph_regs))
-		return PTR_ERR(pbc->periph_regs);
-
-	pbc->top_regs = syscon_regmap_lookup_by_phandle(pdev->dev.of_node,
-							    "img,cr-top");
-	if (IS_ERR(pbc->top_regs))
-		return PTR_ERR(pbc->top_regs);
-
-	np_event = of_parse_phandle(np, "img,event-timer", 0);
-	if (!np_event)
-		return -EINVAL;
-	pbc->event_timer = of_find_device_by_node(np_event);
-	if (!pbc->event_timer)
-		return -EPROBE_DEFER;
-
-	ret = pistachio_card_parse_of(np, pbc,
-			&i2s_out_master, &i2s_in_master);
-	if (ret < 0) {
-		if (ret != -EPROBE_DEFER)
-			dev_err(dev, "parse error %d\n", ret);
-		goto err;
-	}
-
-	if (ret > 0) {
-		pbc->card.dai_link = pbc->dai_links_st;
-		pbc->card.num_links = ret;
-	}
-
-	ret = pistachio_card_get_i2s_out_master(pbc, i2s_out_master);
-	if (!ret)
-		ret = pistachio_card_get_i2s_in_master(pbc, i2s_in_master);
-
-	if (!IS_ERR_OR_NULL(i2s_out_master))
-		of_node_put(i2s_out_master);
-
-	if (!IS_ERR_OR_NULL(i2s_in_master))
-		of_node_put(i2s_in_master);
-
-	if (ret)
-		goto err;
-
-	codec_conf = pbc->codec_conf;
-
-	codec_np = pbc->codecs[PISTACHIO_CODEC_TPA6130A2].np;
-	if (codec_np) {
-		codec_conf->of_node = codec_np;
-		codec_conf->name_prefix = "TPA";
-		codec_conf++;
-	}
-
-	codec_np = pbc->codecs[PISTACHIO_CODEC_PCM3060_DAC].np;
-	if (!codec_np)
-		codec_np = pbc->codecs[PISTACHIO_CODEC_PCM3060_ADC].np;
-	if (codec_np) {
-		codec_conf->of_node = codec_np;
-		codec_conf->name_prefix = "PCM3060";
-		codec_conf++;
-	}
-
-	codec_np = pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_DAC].np;
-	if (!codec_np)
-		codec_np = pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_ADC].np;
-	if (codec_np) {
-		codec_conf->of_node = codec_np;
-		codec_conf->name_prefix = "PCM3168A 1";
-		codec_conf++;
-	}
-
-	codec_np = pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_DAC].np;
-	if (!codec_np)
-		codec_np = pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_ADC].np;
-	if (codec_np) {
-		codec_conf->of_node = codec_np;
-		codec_conf->name_prefix = "PCM3168A 2";
-		codec_conf++;
-	}
-
-	pbc->card.codec_conf = pbc->codec_conf;
-	pbc->card.num_configs = (codec_conf - pbc->codec_conf);
-
-	ret = pistachio_card_init_clk(dev, "audio_pll", &pbc->audio_pll,
-			&pbc->audio_pll_rate);
-	if (ret)
-		goto err;
-
-	ret = pistachio_card_init_clk(dev, "i2s_mclk", &pbc->i2s_mclk,
-			&pbc->i2s_mclk_rate);
-	if (ret)
-		goto err_clk_audio_pll;
-
-	pbc->i2s_clk_notifier.notifier_call =
-			pistachio_card_i2s_clk_notifier_cb;
-	ret = clk_notifier_register(pbc->i2s_mclk,
-			&pbc->i2s_clk_notifier);
-	if (ret)
-		goto err_clk_mclk;
-
-	if (pbc->mclk_source == PISTACHIO_MCLK_DAC_CLK) {
-		ret = pistachio_card_init_clk(dev, "dac_clk", &pbc->dac_clk,
-				&pbc->dac_clk_rate);
-		if (ret)
-			goto err_clk_mclk;
-	}
-
-	ret = pistachio_card_init_clk(dev, "evt_clk", &pbc->evt_clk,
-				&pbc->evt_clk_rate);
-	if (ret)
-		goto err_clk_dac;
+	pbc->card.name = "pistachio-card";
 
 	snd_soc_card_set_drvdata(&pbc->card, pbc);
 
-	ret = devm_snd_soc_register_card(dev, &pbc->card);
-	if (ret < 0)
-		goto err_clk_evt;
+	mutex_init(&pbc->rate_mutex);
 
-	ret = snd_soc_add_card_controls(&pbc->card, pistachio_bub_controls,
-			ARRAY_SIZE(pistachio_bub_controls));
-	if(ret < 0)
-		goto err_clk_evt;
+	pbc->hp_jack_gpio.gpio = -ENOENT;
+	pbc->mute_gpio = -ENOENT;
+
+	ret = pistachio_card_parse_of(np, pbc);
+	if (ret)
+		goto err;
+
+	ret = pistachio_card_init_clk(dev, "audio_pll", &pbc->audio_pll);
+	if (ret)
+		goto err;
+
+	ret = pistachio_card_init_clk(dev, "i2s_mclk", &pbc->i2s_mclk.mclk);
+	if (ret)
+		goto err_clk_audio_pll;
+
+	ret = pistachio_card_init_clk(dev, "dac_clk", &pbc->dac_mclk.mclk);
+	if (ret)
+		goto err_clk_i2s;
+
+	ret = pistachio_card_init_rates(pbc);
+	if (ret)
+		goto err_clk_dac;
+
+	pbc->i2s_clk_notifier.notifier_call = pistachio_card_i2s_clk_cb;
+	ret = clk_notifier_register(pbc->i2s_mclk.mclk,
+					&pbc->i2s_clk_notifier);
+	if (ret)
+		goto err_clk_dac;
+
+	ret = devm_snd_soc_register_card(dev, &pbc->card);
+	if (ret)
+		goto err_notifier;
+
+	ret = snd_soc_add_card_controls(&pbc->card, pistachio_controls,
+					ARRAY_SIZE(pistachio_controls));
+	if (ret)
+		goto err_notifier;
 
 	if (gpio_is_valid(pbc->hp_jack_gpio.gpio)) {
 		pbc->hp_jack_pin.pin = "Headphones";
@@ -1718,89 +2294,63 @@ static int pistachio_card_probe(struct platform_device *pdev)
 		pbc->hp_jack_gpio.name = "Headphone detection";
 		pbc->hp_jack_gpio.report = SND_JACK_HEADPHONE;
 		pbc->hp_jack_gpio.debounce_time = 150;
-		snd_soc_card_jack_new(&pbc->card, "Headphones",
-				SND_JACK_HEADPHONE, &pbc->hp_jack, &pbc->hp_jack_pin, 1);
-		snd_soc_jack_add_gpios(&pbc->hp_jack, 1, &pbc->hp_jack_gpio);
+		ret = snd_soc_card_jack_new(&pbc->card, "Headphones",
+			SND_JACK_HEADPHONE, &pbc->hp_jack, &pbc->hp_jack_pin,
+			1);
+		if (ret)
+			goto err_notifier;
+		ret = snd_soc_jack_add_gpios(&pbc->hp_jack, 1,
+				&pbc->hp_jack_gpio);
+		if (ret)
+			goto err_notifier;
 	}
 
-	dev_info(dev, "\n");
-	dev_info(dev, "#####################################\n");
-	dev_info(dev, "\n");
-	dev_info(dev, "Pistachio BuB Audio Card\n");
-	dev_info(dev, "\n");
-
-	if (!pbc->card.num_links) {
-		dev_info(dev, "No dai links present\n");
-	} else {
-		if (pbc->dai_links[PISTACHIO_LINK_SPDIF_OUT]) {
-			dev_info(dev, "SPDIF OUT\n");
-			dev_info(dev, "\n");
+	if (gpio_is_valid(pbc->mute_gpio)) {
+		if (pbc->mute_gpio_inverted)
+			gpio_flags = GPIOF_OUT_INIT_HIGH;
+		else
+			gpio_flags = GPIOF_OUT_INIT_LOW;
+		ret = gpio_request_one(pbc->mute_gpio, gpio_flags, "Mute");
+		if (ret)
+			goto err_jack;
+		control = devm_kzalloc(dev, sizeof(*control), GFP_KERNEL);
+		if (!control) {
+			ret = -ENOMEM;
+			goto err_mute;
 		}
-		if (pbc->dai_links[PISTACHIO_LINK_SPDIF_IN]) {
-			dev_info(dev, "SPDIF IN\n");
-			dev_info(dev, "\n");
-		}
-		if (pbc->dai_links[PISTACHIO_LINK_PRL_OUT]) {
-			dev_info(dev, "PARALLEL OUT\n");
-			if (pbc->codecs[PISTACHIO_CODEC_TPA6130A2].np)
-				dev_info(dev, "    TPA6130A2\n");
-			dev_info(dev, "\n");
-		}
-		if (pbc->dai_links[PISTACHIO_LINK_I2S_OUT]) {
-			dev_info(dev, "I2S OUT%s\n",
-				((pbc->i2s_out_master == PISTACHIO_CPU_I2S_OUT) ?
-				((pbc->i2s_in_master == PISTACHIO_CPU_I2S_OUT) ?
-				(" (Dual Frame + Bit Clock Master)") : (" (Frame + Bit Clock Master)")) :
-				("")));
-			if (pbc->codecs[PISTACHIO_CODEC_PCM3060_DAC].np)
-				dev_info(dev, "    PCM3060%s\n",
-					(pbc->i2s_out_master == PISTACHIO_CODEC_PCM3060_DAC) ?
-					(" (Frame + Bit Clock Master)") : (""));
-			if (pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_DAC].np)
-				dev_info(dev, "    PCM3168A 1%s\n",
-					(pbc->i2s_out_master == PISTACHIO_CODEC_PCM3168A_1_DAC) ?
-					(" (Frame + Bit Clock Master)") : (""));
-			if (pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_DAC].np)
-				dev_info(dev, "    PCM3168A 2%s\n",
-					(pbc->i2s_out_master == PISTACHIO_CODEC_PCM3168A_2_DAC) ?
-					(" (Frame + Bit Clock Master)") : (""));
-			dev_info(dev, "\n");
-		}
-		if (pbc->dai_links[PISTACHIO_LINK_I2S_IN]) {
-			dev_info(dev, "I2S IN\n");
-			if (pbc->codecs[PISTACHIO_CODEC_PCM3060_ADC].np)
-				dev_info(dev, "    PCM3060%s\n",
-					(pbc->i2s_in_master == PISTACHIO_CODEC_PCM3060_ADC) ?
-					(" (Frame + Bit Clock Master)") : (""));
-			if (pbc->codecs[PISTACHIO_CODEC_PCM3168A_1_ADC].np)
-				dev_info(dev, "    PCM3168A 1%s\n",
-					(pbc->i2s_in_master == PISTACHIO_CODEC_PCM3168A_1_ADC) ?
-					(" (Frame + Bit Clock Master)") : (""));
-			if (pbc->codecs[PISTACHIO_CODEC_PCM3168A_2_ADC].np)
-				dev_info(dev, "    PCM3168A 2%s\n",
-					(pbc->i2s_in_master == PISTACHIO_CODEC_PCM3168A_2_ADC) ?
-					(" (Frame + Bit Clock Master)") : (""));
-			if (pbc->i2s_in_master == PISTACHIO_FRAME_EXTERNAL)
-				dev_info(dev, "    EXTERNAL (Frame + Bit Clock Master)\n");
-			dev_info(dev, "\n");
-		}
+		control->access = SNDRV_CTL_ELEM_ACCESS_READWRITE;
+		control->iface = SNDRV_CTL_ELEM_IFACE_CARD;
+		control->name = "Mute Switch";
+		control->info = snd_ctl_boolean_mono_info;
+		control->get = pistachio_card_get_mute;
+		control->put = pistachio_card_set_mute;
+		ret = snd_soc_add_card_controls(&pbc->card, control, 1);
+		if (ret)
+			goto err_mute;
 	}
-	dev_info(dev, "#####################################\n");
-	dev_info(dev, "\n");
+
+#ifdef	DEBUG
+	pistachio_card_info(pbc);
+#endif
 
 	return 0;
 
-err_clk_evt:
-	clk_disable_unprepare(pbc->evt_clk);
+err_mute:
+	if (gpio_is_valid(pbc->mute_gpio))
+		gpio_free(pbc->mute_gpio);
+err_jack:
+	if (gpio_is_valid(pbc->hp_jack_gpio.gpio))
+		snd_soc_jack_free_gpios(&pbc->hp_jack, 1, &pbc->hp_jack_gpio);
+err_notifier:
+	clk_notifier_unregister(pbc->i2s_mclk.mclk, &pbc->i2s_clk_notifier);
 err_clk_dac:
-	if (pbc->mclk_source == PISTACHIO_MCLK_DAC_CLK)
-		clk_disable_unprepare(pbc->dac_clk);
-err_clk_mclk:
-	clk_disable_unprepare(pbc->i2s_mclk);
+	clk_disable_unprepare(pbc->dac_mclk.mclk);
+err_clk_i2s:
+	clk_disable_unprepare(pbc->i2s_mclk.mclk);
 err_clk_audio_pll:
 	clk_disable_unprepare(pbc->audio_pll);
 err:
-	pistachio_card_unref(pdev, i2s_out_master, i2s_in_master);
+	pistachio_card_unref(pbc);
 
 	return ret;
 }
@@ -1808,26 +2358,31 @@ err:
 static int pistachio_card_remove(struct platform_device *pdev)
 {
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
-	struct pistachio_card_data *pbc = snd_soc_card_get_drvdata(card);
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(card);
 
+	pistachio_evt_abort_measurements(pbc->event_timer);
+	if (gpio_is_valid(pbc->mute_gpio))
+		gpio_free(pbc->mute_gpio);
 	if (gpio_is_valid(pbc->hp_jack_gpio.gpio))
-		snd_soc_jack_free_gpios(&pbc->hp_jack, 1,
-					&pbc->hp_jack_gpio);
-
-	pistachio_card_unref(pdev, NULL, NULL);
+		snd_soc_jack_free_gpios(&pbc->hp_jack, 1, &pbc->hp_jack_gpio);
+	clk_notifier_unregister(pbc->i2s_mclk.mclk, &pbc->i2s_clk_notifier);
+	clk_disable_unprepare(pbc->dac_mclk.mclk);
+	clk_disable_unprepare(pbc->i2s_mclk.mclk);
+	clk_disable_unprepare(pbc->audio_pll);
+	pistachio_card_unref(pbc);
 
 	return 0;
 }
 
 static const struct of_device_id pistachio_card_of_match[] = {
-	{ .compatible = "img,pistachio-bub-audio" },
+	{ .compatible = "img,pistachio-audio" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, pistachio_card_of_match);
 
 static struct platform_driver pistachio_card = {
 	.driver = {
-		.name = "pistachio-bub-card",
+		.name = "pistachio-card",
 		.of_match_table = pistachio_card_of_match,
 	},
 	.probe = pistachio_card_probe,
@@ -1835,6 +2390,6 @@ static struct platform_driver pistachio_card = {
 };
 module_platform_driver(pistachio_card);
 
-MODULE_DESCRIPTION("Pistachio BuB audio card driver");
+MODULE_DESCRIPTION("Pistachio audio card driver");
 MODULE_AUTHOR("Damien Horsley <Damien.Horsley@imgtec.com>");
 MODULE_LICENSE("GPL v2");

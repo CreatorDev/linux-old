@@ -1,7 +1,7 @@
 /*
  * Pistachio event timer driver
  *
- * Copyright (C) 2014 Imagination Technologies Ltd.
+ * Copyright (C) 2015 Imagination Technologies Ltd.
  *
  * Author: Damien Horsley <Damien.Horsley@imgtec.com>
  *
@@ -11,30 +11,32 @@
  */
 
 #include <linux/clk.h>
+#include <linux/clk-provider.h>
+#include <linux/clocksource.h>
+#include <linux/delay.h>
+#include <linux/hrtimer.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/irq.h>
-#include <linux/hrtimer.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/of_device.h>
+#include <linux/of_irq.h>
 #include <linux/platform_device.h>
+#include <linux/regmap.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
-#include <linux/of_irq.h>
-#include <linux/clk-provider.h>
-#include <linux/of_address.h>
-#include <linux/delay.h>
-#include <linux/clocksource.h>
 #include <linux/timecounter.h>
 
-#ifdef CONFIG_ATU
-#include <linux/atu_clk.h>
-#endif /* CONFIG_ATU */
+#include <linux/mfd/syscon.h>
 
 #include "pistachio-event-timer.h"
+#include "pistachio-event-timer-internal.h"
+
+#define	PISTACHIO_EVT_FIFO_DEPTH		16
 
 #define PISTACHIO_EVT_COUNTER			0x0
 #define PISTACHIO_EVT_COUNTER_MASK		0x3fffffff
@@ -57,135 +59,92 @@
 #define PISTACHIO_EVT_TIMER_ENABLE		0x100
 #define PISTACHIO_EVT_TIMER_ENABLE_MASK		0x1
 
+#define PISTACHIO_EVT_SOURCES			0x108
+#define PISTACHIO_EVT_SOURCES_SHIFT		16
+#define	PISTACHIO_EVT_SOURCES_MASK_LSB		0xffffUL
+
+#define PISTACHIO_EVT_PHASE_FIFO		0x110
+
+#define	PISTACHIO_EVT_SAMPLE_FIFO(id)		(0x114 + ((id) * 0x4))
+
 #define PISTACHIO_EVT_EVENT_CTL			0x120
 #define PISTACHIO_EVT_EVENT_CTL_MASK		0x3
 #define PISTACHIO_EVT_EVENT_CTL_WIDTH		2
 
-#define PISTACHIO_EVT_TB			0x130
-#define PISTACHIO_EVT_TIME_REG(en)		(PISTACHIO_EVT_TB + (0x4 * en))
+#define PISTACHIO_EVT_TIME_REG(en)		(0x130 + ((en) * 0x4))
 
-#define PISTACHIO_EVT_TIMESTAMP_SRC_START	0x190
-#define PISTACHIO_EVT_TIMESTAMP_SRC_MASK	0xff
-#define PISTACHIO_EVT_TIMESTAMP_SRC_WIDTH	8
+#define PISTACHIO_EVT_INT_STATUS		0x170
 
-#define	PISTACHIO_EVT_MIN_EVENT_DELTA_NS	100000
+#define PISTACHIO_EVT_INT_ENABLE		0x174
 
-struct pistachio_evt_callback {
-	u64 trigger_time;
-	u32 cyc;
-	void (*callback)(void *context);
-	void *context;
-};
+#define PISTACHIO_EVT_INT_CLEAR			0x178
 
-struct pistachio_evt_data {
-	spinlock_t lock;
-	struct device *dev;
-	void __iomem *base;
-	struct clk *clk_sys;
-	struct clk *clk_ref_internal;
-	struct clk *clk_ref_a;
-	struct clk *clk_ref_b;
-	const char *ref_names[2];
-	struct cyclecounter cc;
-	struct timecounter tc;
-	struct notifier_block evt_clk_notifier;
-	struct hrtimer poll_timer;
-	ktime_t quarter_rollover;
-	unsigned long rate;
-	struct pistachio_evt_callback trigger_cbs[PISTACHIO_EVT_NUM_ENABLES];
-};
-unsigned long evt_timer_rate;
+#define	PISTACHIO_EVT_INT_SAMPLE_0_FNE_MASK	BIT(5)
+#define	PISTACHIO_EVT_INT_SAMPLE_1_FNE_MASK	BIT(9)
+#define	PISTACHIO_EVT_INT_PHASE_FNE_MASK	BIT(1)
 
-static inline u32 pistachio_evt_readl(struct pistachio_evt_data *evt, u32 reg)
+#define	PISTACHIO_EVT_EXT_SRC_REG		0x158
+#define	PISTACHIO_EVT_EXT_SRC_MASK		0xf
+#define	PISTACHIO_EVT_EXT_SRC_NUM_BANKS		7
+
+#define	PISTACHIO_EVT_MIN_EVENT_DELTA_NS	10000
+
+static LIST_HEAD(pistachio_evt_list);
+static DEFINE_SPINLOCK(pistachio_evt_list_spinlock);
+
+static inline u32 pistachio_evt_readl(struct pistachio_evt *evt, u32 reg)
 {
 	return readl(evt->base + reg);
 }
 
-static inline void pistachio_evt_writel(struct pistachio_evt_data *evt,
+static inline void pistachio_evt_writel(struct pistachio_evt *evt,
 					u32 val, u32 reg)
 {
 	writel(val, evt->base + reg);
 }
 
-static inline void pistachio_evt_stop_count(struct pistachio_evt_data *evt)
+static inline void pistachio_evt_stop_count(struct pistachio_evt *evt)
 {
 	u32 reg = pistachio_evt_readl(evt, PISTACHIO_EVT_COUNTER);
+
 	reg &= ~PISTACHIO_EVT_COUNTER_ENABLE_MASK;
 	pistachio_evt_writel(evt, reg, PISTACHIO_EVT_COUNTER);
 }
 
-static inline void pistachio_evt_start_count(struct pistachio_evt_data *evt)
+static inline void pistachio_evt_start_count(struct pistachio_evt *evt)
 {
 	u32 reg = pistachio_evt_readl(evt, PISTACHIO_EVT_COUNTER);
+
 	reg |= PISTACHIO_EVT_COUNTER_ENABLE_MASK;
 	pistachio_evt_writel(evt, reg, PISTACHIO_EVT_COUNTER);
 }
 
-static inline int pistachio_evt_get_count(struct pistachio_evt_data *evt)
+static inline u32 pistachio_evt_get_count(struct pistachio_evt *evt)
 {
 	u32 reg = pistachio_evt_readl(evt, PISTACHIO_EVT_COUNTER);
-	return reg & PISTACHIO_EVT_COUNTER_MASK;
-}
 
-static inline void pistachio_evt_set_count(struct pistachio_evt_data *evt,
-					int count)
-{
-	u32 reg = pistachio_evt_readl(evt, PISTACHIO_EVT_COUNTER);
-	reg = (reg & ~PISTACHIO_EVT_COUNTER_MASK) |
-		(count & PISTACHIO_EVT_COUNTER_MASK);
-	pistachio_evt_writel(evt, reg, PISTACHIO_EVT_COUNTER);
+	return reg & PISTACHIO_EVT_COUNTER_MASK;
 }
 
 static cycle_t pistachio_evt_cc_read(const struct cyclecounter *cc)
 {
-	struct pistachio_evt_data *evt;
+	struct pistachio_evt *evt;
 
-	evt = container_of(cc, struct pistachio_evt_data, cc);
+	evt = container_of(cc, struct pistachio_evt, cc);
 
 	return (cycle_t)pistachio_evt_get_count(evt);
 }
 
-static u64 _pistachio_evt_read_ns(struct pistachio_evt_data *evt, u32 *cyc)
-{
-	u64 ret;
-
-	ret = timecounter_read(&evt->tc);
-	if (cyc)
-		*cyc = evt->tc.cycle_last;
-
-	return ret;
-}
-
-static u64 pistachio_evt_read_ns(struct pistachio_evt_data *evt, u32 *cyc)
-{
-	unsigned long flags;
-	u64 ret;
-
-	spin_lock_irqsave(&evt->lock, flags);
-	ret = _pistachio_evt_read_ns(evt, cyc);
-	spin_unlock_irqrestore(&evt->lock, flags);
-
-	return ret;
-}
-
-void pistachio_evt_read(struct platform_device *pdev,
+void pistachio_evt_get_time_ts(struct pistachio_evt *evt,
 				struct timespec *ts)
 {
 	u64 tmp;
-#ifndef	CONFIG_ATU
-	struct pistachio_evt_data *evt = platform_get_drvdata(pdev);
-#endif
 
-#ifdef	CONFIG_ATU
-	tmp = atu_get_current_time();
-#else
-	tmp = pistachio_evt_read_ns(evt, NULL);
-#endif
-
+	tmp = pistachio_evt_get_time(evt);
 	ts->tv_nsec = do_div(tmp, NSEC_PER_SEC);
 	ts->tv_sec = tmp;
 }
-EXPORT_SYMBOL_GPL(pistachio_evt_read);
+EXPORT_SYMBOL_GPL(pistachio_evt_get_time_ts);
 
 static inline bool pistachio_evt_bad_event(enum pistachio_evt_enable event)
 {
@@ -201,7 +160,7 @@ static inline bool pistachio_evt_bad_event(enum pistachio_evt_enable event)
 }
 
 static struct pistachio_evt_callback *pistachio_evt_get_next_trigger(
-		struct pistachio_evt_data *evt, u64 *p_next_trigger)
+		struct pistachio_evt *evt, u64 *p_next_trigger)
 {
 	u64 next_trigger, tmp;
 	int i;
@@ -210,7 +169,7 @@ static struct pistachio_evt_callback *pistachio_evt_get_next_trigger(
 	cb = &evt->trigger_cbs[0];
 	next_trigger = ULLONG_MAX;
 
-	for (i = 0; i < PISTACHIO_EVT_NUM_ENABLES; i++) {
+	for (i = 0; i < PISTACHIO_EVT_NUM_ENABLES; i++, cb++) {
 		if (!pistachio_evt_bad_event(i)) {
 			tmp = cb->trigger_time;
 			if (tmp && (tmp < next_trigger)) {
@@ -218,7 +177,6 @@ static struct pistachio_evt_callback *pistachio_evt_get_next_trigger(
 				cbr = cb;
 			}
 		}
-		cb++;
 	}
 
 	*p_next_trigger = next_trigger;
@@ -226,16 +184,33 @@ static struct pistachio_evt_callback *pistachio_evt_get_next_trigger(
 	return cbr;
 }
 
-void _pistachio_evt_disable_event(struct platform_device *pdev,
+struct pistachio_evt *pistachio_evt_get(struct device_node *np)
+{
+	struct pistachio_evt *evt, *ret = ERR_PTR(-EPROBE_DEFER);
+
+	spin_lock(&pistachio_evt_list_spinlock);
+	list_for_each_entry(evt, &pistachio_evt_list, list) {
+		if (evt->np == np) {
+			ret = evt;
+			break;
+		}
+	}
+	spin_unlock(&pistachio_evt_list_spinlock);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pistachio_evt_get);
+
+void _pistachio_evt_disable_event(struct pistachio_evt *evt,
 		enum pistachio_evt_enable event)
 {
 	u32 reg;
-	struct pistachio_evt_data *evt = platform_get_drvdata(pdev);
 
 	dev_dbg(evt->dev, "Disable event %u\n", (unsigned int)event);
 
 	if (pistachio_evt_bad_event(event)) {
-		dev_err(evt->dev, "Disable event %u failed (bad event %u)\n", (unsigned int)event, (unsigned int)event);
+		dev_err(evt->dev, "Disable event %u failed (bad event %u)\n",
+			(unsigned int)event, (unsigned int)event);
 		return;
 	}
 
@@ -250,52 +225,52 @@ void _pistachio_evt_disable_event(struct platform_device *pdev,
 }
 EXPORT_SYMBOL_GPL(_pistachio_evt_disable_event);
 
-void pistachio_evt_disable_event(struct platform_device *pdev,
+void pistachio_evt_disable_event(struct pistachio_evt *evt,
 		enum pistachio_evt_enable event)
 {
 	unsigned long flags;
-	struct pistachio_evt_data *evt = platform_get_drvdata(pdev);
 
 	spin_lock_irqsave(&evt->lock, flags);
-	_pistachio_evt_disable_event(pdev, event);
+	_pistachio_evt_disable_event(evt, event);
 	spin_unlock_irqrestore(&evt->lock, flags);
 }
 EXPORT_SYMBOL_GPL(pistachio_evt_disable_event);
 
-int pistachio_evt_set_event(struct platform_device *pdev,
+int pistachio_evt_set_event(struct pistachio_evt *evt,
 		enum pistachio_evt_enable event, enum pistachio_evt_type type,
 		struct timespec *ts,
-		void (*event_trigger_callback)(void *context), void *context)
+		void (*event_trigger_callback)(struct pistachio_evt *, void *),
+		void *context)
 {
 	u32 reg, cyc, event_reg_addr, irq_reg_addr;
 	u64 trigger_time, next_trigger;
 	unsigned long flags;
-	struct pistachio_evt_data *evt = platform_get_drvdata(pdev);
 	struct pistachio_evt_callback *cb;
-#ifdef	CONFIG_ATU
 	int ret;
-#else
-	u64 tmp;
-#endif
 
-	dev_dbg(evt->dev, "Set event %u type %u time %u,%u\n", (unsigned int)event, (unsigned int)type, (unsigned int)ts->tv_sec, (unsigned int)ts->tv_nsec);
+	dev_dbg(evt->dev, "Set event %u type %u time %u,%ld\n",
+		(unsigned int)event, (unsigned int)type,
+		(unsigned int)ts->tv_sec, ts->tv_nsec);
 
 	if (pistachio_evt_bad_event(event)) {
-		dev_err(evt->dev, "Set event %u failed (bad event %u)\n", (unsigned int)event, (unsigned int)event);
+		dev_err(evt->dev, "Set event %u failed (bad event %u)\n",
+			(unsigned int)event, (unsigned int)event);
 		return -EINVAL;
 	}
 
-	switch(type) {
+	switch (type) {
 	case PISTACHIO_EVT_TYPE_LEVEL:
 	case PISTACHIO_EVT_TYPE_PULSE:
 		break;
 	default:
-		dev_err(evt->dev, "Set event %u failed (bad event type %u)\n", (unsigned int)event, (unsigned int)type);
+		dev_err(evt->dev, "Set event %u failed (bad event type %u)\n",
+			(unsigned int)event, (unsigned int)type);
 		return -EINVAL;
 	}
 
 	if (!ts) {
-		dev_err(evt->dev, "Set event %u failed (ts == NULL)\n", (unsigned int)event);
+		dev_err(evt->dev, "Set event %u failed (ts == NULL)\n",
+			(unsigned int)event);
 		return -EINVAL;
 	}
 
@@ -308,14 +283,19 @@ int pistachio_evt_set_event(struct platform_device *pdev,
 
 	/* Trigger already pending for this event? */
 	if (evt->trigger_cbs[event].trigger_time) {
-		dev_err(evt->dev, "Set event %u failed (trigger already pending at %lldns)\n", (unsigned int)event, evt->trigger_cbs[event].trigger_time);
 		spin_unlock_irqrestore(&evt->lock, flags);
+		dev_err(evt->dev, "Set event %u failed (trigger already pending at %lluns)\n",
+			(unsigned int)event,
+			evt->trigger_cbs[event].trigger_time);
 		return -EINVAL;
 	}
 
 	reg = pistachio_evt_readl(evt, PISTACHIO_EVT_EVENT_CTL);
 
-	/* Disable event first */
+	/*
+	 * This event may have triggered previously. The control bits need to
+	 * be cleared before programming a new trigger
+	 */
 	reg &= ~(PISTACHIO_EVT_EVENT_CTL_MASK <<
 		(PISTACHIO_EVT_EVENT_CTL_WIDTH * event));
 
@@ -323,62 +303,22 @@ int pistachio_evt_set_event(struct platform_device *pdev,
 
 	reg |= (type << (PISTACHIO_EVT_EVENT_CTL_WIDTH * event));
 
-#ifdef	CONFIG_ATU
-	ret = atu_to_frc(trigger_time, &cyc, PISTACHIO_EVT_MIN_EVENT_DELTA_NS);
-	if(ret) {
+	ret = pistachio_evt_time_to_reg(evt, trigger_time, &cyc,
+					PISTACHIO_EVT_MIN_EVENT_DELTA_NS);
+	if (ret) {
 		spin_unlock_irqrestore(&evt->lock, flags);
+		dev_err(evt->dev, "Set event %u failed (%d)\n",
+			(unsigned int)event, ret);
 		return ret;
 	}
-#else
-	tmp = _pistachio_evt_read_ns(evt, &cyc);
-
-	/* Trigger in the past or too close to current time? */
-	if (trigger_time < (tmp + PISTACHIO_EVT_MIN_EVENT_DELTA_NS)) {
-		if (trigger_time < tmp)
-			dev_dbg(evt->dev, "Set event %u failed (1) (trigger in the past: -%lluns)\n", (unsigned int)event, (tmp - trigger_time));
-		else
-			dev_dbg(evt->dev, "Set event %u failed (1) (trigger too close to expiry: +%lluns)\n", (unsigned int)event, (trigger_time - tmp));
-		spin_unlock_irqrestore(&evt->lock, flags);
-		return -ETIME;
-	}
-
-	/*
-	 * Convert ns difference between current time and trigger time
-	 * to event timer cycles
-	 */
-	tmp = (trigger_time - tmp) << evt->cc.shift;
-	do_div(tmp, evt->cc.mult);
-
-	/* Trigger too far into the future (cyc value would be ambiguous)? */
-	if (tmp > PISTACHIO_EVT_COUNTER_MASK) {
-		dev_dbg(evt->dev, "Set event %u failed (trigger too far into the future: %lluns)\n", (unsigned int)event, trigger_time);
-		spin_unlock_irqrestore(&evt->lock, flags);
-		return -ETIME;
-	}
-
-	/* Calculate cycle value for trigger */
-	cyc = (cyc + tmp) & PISTACHIO_EVT_COUNTER_MASK;
-
-	cb = pistachio_evt_get_next_trigger(evt, &next_trigger);
-
-	/* Final time check before fast write operations */
-	tmp = _pistachio_evt_read_ns(evt, NULL);
-
-	if (trigger_time < (tmp + PISTACHIO_EVT_MIN_EVENT_DELTA_NS)) {
-		if (trigger_time < tmp)
-			dev_dbg(evt->dev, "Set event %u failed (2) (trigger in the past: -%lluns)\n", (unsigned int)event, (tmp - trigger_time));
-		else
-			dev_dbg(evt->dev, "Set event %u failed (2) (trigger too close to expiry: +%lluns)\n", (unsigned int)event, (trigger_time - tmp));
-		spin_unlock_irqrestore(&evt->lock, flags);
-		return -ETIME;
-	}
-#endif
 
 	pistachio_evt_writel(evt, cyc, event_reg_addr);
 
+	cb = pistachio_evt_get_next_trigger(evt, &next_trigger);
+
 	/*
 	 * No irq trigger currently set or the new trigger time is
-	 * earlier than the current trigger time?
+	 * earlier than the next trigger time?
 	 */
 	if (!cb || (next_trigger > trigger_time)) {
 		pistachio_evt_writel(evt, cyc, irq_reg_addr);
@@ -400,8 +340,8 @@ int pistachio_evt_set_event(struct platform_device *pdev,
 }
 EXPORT_SYMBOL_GPL(pistachio_evt_set_event);
 
-static bool pistachio_evt_retrigger(struct pistachio_evt_data *evt,
-				struct pistachio_evt_callback * cb)
+static bool pistachio_evt_retrigger(struct pistachio_evt *evt,
+				struct pistachio_evt_callback *cb)
 {
 	u32 reg, trig_reg_addr;
 	u64 cur_time;
@@ -416,11 +356,7 @@ static bool pistachio_evt_retrigger(struct pistachio_evt_data *evt,
 	pistachio_evt_writel(evt, cb->cyc, trig_reg_addr);
 	pistachio_evt_writel(evt, reg, PISTACHIO_EVT_EVENT_CTL);
 
-#ifdef	CONFIG_ATU
-	cur_time = atu_get_current_time();
-#else
-	cur_time = _pistachio_evt_read_ns(evt, NULL);
-#endif
+	cur_time = _pistachio_evt_get_time(evt);
 
 	/* Trigger passed while writing? */
 	if (cb->trigger_time < cur_time)
@@ -431,7 +367,7 @@ static bool pistachio_evt_retrigger(struct pistachio_evt_data *evt,
 
 static irqreturn_t pistachio_evt_trigger_0_irq(int irq, void *dev_id)
 {
-	struct pistachio_evt_data *evt = (struct pistachio_evt_data *)dev_id;
+	struct pistachio_evt *evt = (struct pistachio_evt *)dev_id;
 	u64 next_trigger, cur_time;
 	struct pistachio_evt_callback *cb;
 	unsigned long flags;
@@ -454,21 +390,17 @@ static irqreturn_t pistachio_evt_trigger_0_irq(int irq, void *dev_id)
 		if (!cb)
 			break;
 
-#ifdef	CONFIG_ATU
-		cur_time = atu_get_current_time();
-#else
-		cur_time = _pistachio_evt_read_ns(evt, NULL);
-#endif
+		cur_time = _pistachio_evt_get_time(evt);
 
 		if (cur_time >= next_trigger) {
 			if (cb->callback)
-				cb->callback(cb->context);
+				cb->callback(evt, cb->context);
 			cb->trigger_time = 0;
 		} else if (pistachio_evt_retrigger(evt, cb)) {
 			break;
 		} else {
 			if (cb->callback)
-				cb->callback(cb->context);
+				cb->callback(evt, cb->context);
 			cb->trigger_time = 0;
 		}
 	}
@@ -478,124 +410,323 @@ static irqreturn_t pistachio_evt_trigger_0_irq(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
-int pistachio_evt_set_timestamp_source(struct platform_device *pdev,
-		unsigned int ts_module_index, unsigned int interrupt_source)
+int pistachio_evt_set_source(struct pistachio_evt *evt,
+			int id, enum pistachio_evt_source source)
 {
-	u32 timestamps_per_reg, reg_addr, reg, shift;
-	struct pistachio_evt_data *evt = platform_get_drvdata(pdev);
 	unsigned long flags;
+	u32 reg;
 
-	dev_dbg(evt->dev, "Set timestamp source module index %u source %u\n", (unsigned int)ts_module_index, (unsigned int)interrupt_source);
-
-	if (ts_module_index >= PISTACHIO_EVT_NUM_TIMESTAMP_MODULES) {
-		dev_err(evt->dev, "Set timestamp source module index %u failed (bad timestamp module index %u)\n", (unsigned int)ts_module_index, ts_module_index);
+	if ((id >= PISTACHIO_EVT_MAX_SOURCES) ||
+			(source >= PISTACHIO_EVT_NUM_SOURCES))
 		return -EINVAL;
-	}
-
-	timestamps_per_reg = (32 / PISTACHIO_EVT_TIMESTAMP_SRC_WIDTH);
-	reg_addr = PISTACHIO_EVT_TIMESTAMP_SRC_START +
-		((ts_module_index / timestamps_per_reg) * 4);
-
-	shift = ts_module_index % timestamps_per_reg;
-	shift *= PISTACHIO_EVT_TIMESTAMP_SRC_WIDTH;
 
 	spin_lock_irqsave(&evt->lock, flags);
 
-	reg = pistachio_evt_readl(evt, reg_addr);
-
-	reg &= ~(PISTACHIO_EVT_TIMESTAMP_SRC_MASK << shift);
-
-	reg |= (interrupt_source & PISTACHIO_EVT_TIMESTAMP_SRC_MASK) << shift;
-
-	pistachio_evt_writel(evt, reg, reg_addr);
-
-	pistachio_evt_writel(evt, 1 << ts_module_index,
-			PISTACHIO_EVT_TIMESTAMP_CLR);
-
-	spin_unlock_irqrestore(&evt->lock, flags);
-
-	return 0;
-}
-EXPORT_SYMBOL_GPL(pistachio_evt_set_timestamp_source);
-
-int pistachio_evt_get_timestamp(struct platform_device *pdev,
-		unsigned int ts_module_index, struct timespec *timestamp)
-{
-	u32 reg, cyc, ts;
-	u64 tmp;
-	struct pistachio_evt_data *evt = platform_get_drvdata(pdev);
-	unsigned long flags;
-
-	dev_dbg(evt->dev, "Get timestamp module index %u\n", (unsigned int)ts_module_index);
-
-	if (ts_module_index >= PISTACHIO_EVT_NUM_TIMESTAMP_MODULES) {
-		dev_err(evt->dev, "Set timestamp source module index %u failed (bad timestamp module index %u)\n", (unsigned int)ts_module_index, ts_module_index);
-		return -EINVAL;
-	}
-
-	spin_lock_irqsave(&evt->lock, flags);
-
-	reg = pistachio_evt_readl(evt, PISTACHIO_EVT_TIMESTAMP_STS);
-
-	/* No new timestamp available? */
-	if (!(reg & (1 << ts_module_index))) {
-		dev_dbg(evt->dev, "Get timestamp module index %u failed (no new timestamp)\n", (unsigned int)ts_module_index);
-		spin_unlock_irqrestore(&evt->lock, flags);
-		return -EBUSY;
-	}
-
-	reg = pistachio_evt_readl(evt, PISTACHIO_EVT_TIMESTAMP_START +
-		(ts_module_index * 0x4));
-
-	pistachio_evt_writel(evt, 1 << ts_module_index,
-			PISTACHIO_EVT_TIMESTAMP_CLR);
-
-	tmp = _pistachio_evt_read_ns(evt, &cyc);
-
-	ts = reg & PISTACHIO_EVT_COUNTER_MASK;
+	reg = pistachio_evt_readl(evt, PISTACHIO_EVT_SOURCES);
+	reg &= ~(PISTACHIO_EVT_SOURCES_MASK_LSB <<
+		(id * PISTACHIO_EVT_SOURCES_SHIFT));
+	reg |= source << (id * PISTACHIO_EVT_SOURCES_SHIFT);
+	pistachio_evt_writel(evt, reg, PISTACHIO_EVT_SOURCES);
 
 	/*
-	 * This currently assumes that the period of time between the
-	 * timestamped event and the current time is less than the period
-	 * of the counter. Maybe timestamps should be checked in the poll
-	 * function that ensures the tc doesnt overflow...
+	 * Changing one of the sources invalidates the active sample rate
+	 * measurement for the source in question, and the active phase
+	 * difference measurement, so reset these states and mask the
+	 * interrupts
 	 */
+	evt->sample_rates[id].state = PISTACHIO_EVT_STATE_IDLE;
+	evt->phase_difference.state = PISTACHIO_EVT_STATE_IDLE;
 
-	/* Get the cycle difference */
-	cyc = (cyc - ts) & PISTACHIO_EVT_COUNTER_MASK;
-
-	/* Calculate the ns difference and the ns timestamp value */
-	tmp -= ((u64)cyc * evt->cc.mult) >> evt->cc.shift;
+	reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_ENABLE);
+	if (id == 0)
+		reg &= ~PISTACHIO_EVT_INT_SAMPLE_0_FNE_MASK;
+	else
+		reg &= ~PISTACHIO_EVT_INT_SAMPLE_1_FNE_MASK;
+	reg &= ~PISTACHIO_EVT_INT_PHASE_FNE_MASK;
+	pistachio_evt_writel(evt, reg, PISTACHIO_EVT_INT_ENABLE);
 
 	spin_unlock_irqrestore(&evt->lock, flags);
 
-	timestamp->tv_nsec = do_div(tmp, NSEC_PER_SEC);
-	timestamp->tv_sec = tmp;
+	return 0;
+}
+EXPORT_SYMBOL_GPL(pistachio_evt_set_source);
+
+int pistachio_evt_get_source(struct pistachio_evt *evt,
+		int id, enum pistachio_evt_source *source)
+{
+	u32 reg;
+
+	if (id >= PISTACHIO_EVT_MAX_SOURCES)
+		return -EINVAL;
+
+	reg = pistachio_evt_readl(evt, PISTACHIO_EVT_SOURCES);
+
+	*source = (reg >> (id * PISTACHIO_EVT_SOURCES_SHIFT)) &
+		PISTACHIO_EVT_SOURCES_MASK_LSB;
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(pistachio_evt_get_timestamp);
+EXPORT_SYMBOL_GPL(pistachio_evt_get_source);
 
-enum hrtimer_restart pistachio_evt_poll(struct hrtimer *tmr)
+static void pistachio_evt_clear_fifo(struct pistachio_evt *evt,
+			u32 fifo_offset, u32 mask, bool enable_int)
 {
-	struct pistachio_evt_data *evt;
-	u64 tmp, nsec;
+	u32 reg;
 
-	evt = container_of(tmr, struct pistachio_evt_data, poll_timer);
+	reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_ENABLE);
+	if (enable_int)
+		reg |= mask;
+	else
+		reg &= ~mask;
+	pistachio_evt_writel(evt, reg, PISTACHIO_EVT_INT_ENABLE);
 
-	tmp = pistachio_evt_read_ns(evt, NULL);
-	nsec = do_div(tmp, NSEC_PER_SEC);
-
-	//dev_dbg(evt->dev, "poll time = %u,%u\n", (unsigned int)tmp, (unsigned int)nsec);
-
-	hrtimer_forward(&evt->poll_timer,
-			hrtimer_get_expires(&evt->poll_timer),
-			evt->quarter_rollover);
-
-	return HRTIMER_RESTART;
+	while (1) {
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_STATUS);
+		if (!(reg & mask))
+			break;
+		reg = pistachio_evt_readl(evt, fifo_offset);
+		pistachio_evt_writel(evt, mask, PISTACHIO_EVT_INT_CLEAR);
+		pistachio_evt_writel(evt, 0, PISTACHIO_EVT_INT_CLEAR);
+	}
 }
 
-static void pistachio_evt_clk_rate_change(struct pistachio_evt_data *evt)
+static void pistachio_evt_new_sr(struct pistachio_evt *evt, int id, u32 mask)
+{
+	u32 reg;
+	enum pistachio_evt_state new_state;
+	struct pistachio_evt_measurement *sr = &evt->sample_rates[id];
+
+	switch (sr->state) {
+	case PISTACHIO_EVT_STATE_ACTIVE_FIRST:
+		/* First sample rate measurement is always invalid */
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_SAMPLE_FIFO(id));
+		pistachio_evt_writel(evt, mask, PISTACHIO_EVT_INT_CLEAR);
+		pistachio_evt_writel(evt, 0, PISTACHIO_EVT_INT_CLEAR);
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_STATUS);
+		if (reg & mask)
+			new_state = PISTACHIO_EVT_STATE_COMPLETE;
+		else
+			new_state = PISTACHIO_EVT_STATE_ACTIVE_SECOND;
+		break;
+
+	case PISTACHIO_EVT_STATE_ACTIVE_SECOND:
+		new_state = PISTACHIO_EVT_STATE_COMPLETE;
+		break;
+
+	default:
+		dev_err(evt->dev, "pistachio_evt_new_sr bad state (%d)\n",
+			(int)sr->state);
+		return;
+	}
+
+	if (new_state == PISTACHIO_EVT_STATE_COMPLETE) {
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_ENABLE);
+		reg &= ~mask;
+		pistachio_evt_writel(evt, reg, PISTACHIO_EVT_INT_ENABLE);
+		pistachio_evt_writel(evt, mask, PISTACHIO_EVT_INT_CLEAR);
+		pistachio_evt_writel(evt, 0, PISTACHIO_EVT_INT_CLEAR);
+		if (sr->callback)
+			sr->callback(sr->context);
+	}
+
+	sr->state = new_state;
+}
+
+static void pistachio_evt_new_pd(struct pistachio_evt *evt)
+{
+	u32 reg;
+	enum pistachio_evt_state new_state;
+	u32 mask = PISTACHIO_EVT_INT_PHASE_FNE_MASK;
+	struct pistachio_evt_measurement *pd = &evt->phase_difference;
+
+	switch (pd->state) {
+	case PISTACHIO_EVT_STATE_ACTIVE_FIRST:
+		/* First two phase measurements are always invalid */
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_PHASE_FIFO);
+		pistachio_evt_writel(evt, mask, PISTACHIO_EVT_INT_CLEAR);
+		pistachio_evt_writel(evt, 0, PISTACHIO_EVT_INT_CLEAR);
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_STATUS);
+		if (!(reg & mask)) {
+			new_state = PISTACHIO_EVT_STATE_ACTIVE_SECOND;
+			break;
+		}
+		/* Fall through */
+	case PISTACHIO_EVT_STATE_ACTIVE_SECOND:
+		/* First two phase measurements are always invalid */
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_PHASE_FIFO);
+		pistachio_evt_writel(evt, mask, PISTACHIO_EVT_INT_CLEAR);
+		pistachio_evt_writel(evt, 0, PISTACHIO_EVT_INT_CLEAR);
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_STATUS);
+		if (reg & mask)
+			new_state = PISTACHIO_EVT_STATE_COMPLETE;
+		else
+			new_state = PISTACHIO_EVT_STATE_ACTIVE_THIRD;
+		break;
+
+	case PISTACHIO_EVT_STATE_ACTIVE_THIRD:
+		new_state = PISTACHIO_EVT_STATE_COMPLETE;
+		break;
+
+	default:
+		dev_err(evt->dev, "pistachio_evt_new_pd bad state (%d)\n",
+			(int)pd->state);
+		return;
+	}
+
+	if (new_state == PISTACHIO_EVT_STATE_COMPLETE) {
+		reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_ENABLE);
+		reg &= ~mask;
+		pistachio_evt_writel(evt, reg, PISTACHIO_EVT_INT_ENABLE);
+		pistachio_evt_writel(evt, mask, PISTACHIO_EVT_INT_CLEAR);
+		pistachio_evt_writel(evt, 0, PISTACHIO_EVT_INT_CLEAR);
+		if (pd->callback)
+			pd->callback(pd->context);
+	}
+
+	pd->state = new_state;
+}
+
+static irqreturn_t pistachio_evt_general_irq(int irq, void *dev_id)
+{
+	struct pistachio_evt *evt = (struct pistachio_evt *)dev_id;
+	unsigned long flags;
+	u32 mask, i, isr, ier;
+
+	spin_lock_irqsave(&evt->lock, flags);
+
+	while (1) {
+		isr = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_STATUS);
+		ier = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_ENABLE);
+		isr &= ier;
+
+		if (!isr)
+			break;
+
+		for (i = 0; i < PISTACHIO_EVT_MAX_SOURCES; i++) {
+			if (i == 0)
+				mask = PISTACHIO_EVT_INT_SAMPLE_0_FNE_MASK;
+			else
+				mask = PISTACHIO_EVT_INT_SAMPLE_1_FNE_MASK;
+
+			if (isr & mask)
+				pistachio_evt_new_sr(evt, i, mask);
+		}
+
+		if (isr & PISTACHIO_EVT_INT_PHASE_FNE_MASK)
+			pistachio_evt_new_pd(evt);
+	}
+
+	spin_unlock_irqrestore(&evt->lock, flags);
+
+	return IRQ_HANDLED;
+}
+
+int pistachio_evt_get_sample_rate(struct pistachio_evt *evt, int id,
+			u32 *val, u32 *sys_freq,
+			void (*callback)(void *context), void *context)
+{
+	unsigned long flags;
+	u32 mask;
+	int ret;
+
+	if (id >= PISTACHIO_EVT_MAX_SOURCES)
+		return -EINVAL;
+
+	spin_lock_irqsave(&evt->lock, flags);
+
+	switch (evt->sample_rates[id].state) {
+	case PISTACHIO_EVT_STATE_IDLE:
+		if (id == 0)
+			mask = PISTACHIO_EVT_INT_SAMPLE_0_FNE_MASK;
+		else
+			mask = PISTACHIO_EVT_INT_SAMPLE_1_FNE_MASK;
+
+		pistachio_evt_clear_fifo(evt, PISTACHIO_EVT_SAMPLE_FIFO(id),
+					mask, true);
+
+		ret = -EBUSY;
+		evt->sample_rates[id].state = PISTACHIO_EVT_STATE_ACTIVE_FIRST;
+		evt->sample_rates[id].callback = callback;
+		evt->sample_rates[id].context = context;
+		break;
+
+	case PISTACHIO_EVT_STATE_COMPLETE:
+		*val = pistachio_evt_readl(evt, PISTACHIO_EVT_SAMPLE_FIFO(id));
+		*sys_freq = evt->sys_rate;
+		evt->sample_rates[id].state = PISTACHIO_EVT_STATE_IDLE;
+		ret = 0;
+		break;
+
+	default:
+		ret = -EBUSY;
+		break;
+	}
+
+	spin_unlock_irqrestore(&evt->lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pistachio_evt_get_sample_rate);
+
+extern int pistachio_evt_get_phase_difference(struct pistachio_evt *evt,
+			u32 *val, u32 *sys_freq,
+			void (*callback)(void *context), void *context)
+{
+	unsigned long flags;
+	u32 mask;
+	int ret = 0;
+
+	spin_lock_irqsave(&evt->lock, flags);
+
+	switch (evt->phase_difference.state) {
+	case PISTACHIO_EVT_STATE_IDLE:
+		mask = PISTACHIO_EVT_INT_PHASE_FNE_MASK;
+
+		pistachio_evt_clear_fifo(evt, PISTACHIO_EVT_PHASE_FIFO,
+						mask, true);
+
+		ret = -EBUSY;
+		evt->phase_difference.state = PISTACHIO_EVT_STATE_ACTIVE_FIRST;
+		evt->phase_difference.callback = callback;
+		evt->phase_difference.context = context;
+		break;
+
+	case PISTACHIO_EVT_STATE_COMPLETE:
+		*val = pistachio_evt_readl(evt, PISTACHIO_EVT_PHASE_FIFO);
+		*sys_freq = evt->sys_rate;
+		evt->phase_difference.state = PISTACHIO_EVT_STATE_IDLE;
+		break;
+
+	default:
+		ret = -EBUSY;
+		break;
+	}
+
+	spin_unlock_irqrestore(&evt->lock, flags);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(pistachio_evt_get_phase_difference);
+
+void pistachio_evt_abort_measurements(struct pistachio_evt *evt)
+{
+	unsigned long flags;
+	u32 reg;
+
+	spin_lock_irqsave(&evt->lock, flags);
+	evt->sample_rates[0].state = PISTACHIO_EVT_STATE_IDLE;
+	evt->sample_rates[1].state = PISTACHIO_EVT_STATE_IDLE;
+	evt->phase_difference.state = PISTACHIO_EVT_STATE_IDLE;
+	reg = pistachio_evt_readl(evt, PISTACHIO_EVT_INT_ENABLE);
+	reg &= ~PISTACHIO_EVT_INT_SAMPLE_0_FNE_MASK;
+	reg &= ~PISTACHIO_EVT_INT_SAMPLE_1_FNE_MASK;
+	reg &= ~PISTACHIO_EVT_INT_PHASE_FNE_MASK;
+	pistachio_evt_writel(evt, reg, PISTACHIO_EVT_INT_ENABLE);
+	spin_unlock_irqrestore(&evt->lock, flags);
+}
+EXPORT_SYMBOL_GPL(pistachio_evt_abort_measurements);
+
+static void pistachio_evt_clk_rate_change(struct pistachio_evt *evt)
 {
 	u64 tmp;
 	unsigned long flags;
@@ -618,69 +749,24 @@ static void pistachio_evt_clk_rate_change(struct pistachio_evt_data *evt)
 			NSEC_PER_SEC, DIV_ROUND_UP(mask, rate));
 
 	spin_lock_irqsave(&evt->lock, flags);
-	evt->rate = rate;
 	evt->quarter_rollover = quarter_rollover;
 	evt->cc.mult = mult;
 	evt->cc.shift = shift;
 	spin_unlock_irqrestore(&evt->lock, flags);
 
-	evt_timer_rate = rate;
-
 	dev_dbg(evt->dev, "rate %ld cc mult %u shift %u\n", rate, evt->cc.mult,
 			evt->cc.shift);
 }
 
-#ifndef	CONFIG_ATU
-static void pistachio_evt_start_poll_timer(struct pistachio_evt_data *evt)
-{
-	ktime_t ks;
-
-	dev_dbg(evt->dev, "pistachio_evt_start_poll_timer()\n");
-
-	ks = ktime_get();
-	ks = ktime_add(ks, evt->quarter_rollover);
-
-	hrtimer_start(&evt->poll_timer, ks, HRTIMER_MODE_ABS);
-}
-
-static int pistachio_evt_clk_notifier_cb(struct notifier_block *nb,
-		unsigned long event, void *data)
-{
-	struct pistachio_evt_data *evt;
-
-	evt = container_of(nb, struct pistachio_evt_data, evt_clk_notifier);
-
-	dev_dbg(evt->dev, "pistachio_evt_clk_notifier_cb()\n");
-
-	switch (event) {
-	case PRE_RATE_CHANGE:
-		pistachio_evt_read_ns(evt, NULL);
-		return NOTIFY_OK;
-	case POST_RATE_CHANGE:
-		hrtimer_cancel(&evt->poll_timer);
-		pistachio_evt_clk_rate_change(evt);
-		pistachio_evt_read_ns(evt, NULL);
-		pistachio_evt_start_poll_timer(evt);
-		return NOTIFY_OK;
-	case ABORT_RATE_CHANGE:
-		return NOTIFY_OK;
-	default:
-		return NOTIFY_DONE;
-	}
-}
-#endif
-
 static int pistachio_evt_driver_probe(struct platform_device *pdev)
 {
-	struct pistachio_evt_data *evt;
-	int ret, i, irq;
+	struct pistachio_evt *evt;
+	int ret, irq;
 	struct device_node *np = pdev->dev.of_node;
-	u32 clk_select, rate;
+	u32 clk_select, rate, ext_src_bank;
 	struct resource iomem;
 	struct device *dev = &pdev->dev;
-#ifdef CONFIG_ATU
-	struct clk *audio_pll;
-#endif
+	struct regmap *periph_regs;
 
 	evt = devm_kzalloc(&pdev->dev, sizeof(*evt), GFP_KERNEL);
 	if (!evt)
@@ -688,6 +774,7 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, evt);
 
 	evt->dev = dev;
+	evt->np = np;
 
 	spin_lock_init(&evt->lock);
 
@@ -700,6 +787,19 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 	evt->base = devm_ioremap_resource(dev, &iomem);
 	if (IS_ERR(evt->base))
 		return PTR_ERR(evt->base);
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq < 0) {
+		dev_err(&pdev->dev, "can't get general irq\n");
+		return irq;
+	}
+
+	ret = devm_request_irq(&pdev->dev, irq, pistachio_evt_general_irq,
+				0, pdev->name, evt);
+	if (ret) {
+		dev_err(&pdev->dev, "can't request irq %d\n", irq);
+		return ret;
+	}
 
 	irq = platform_get_irq(pdev, 3);
 	if (irq < 0) {
@@ -714,6 +814,21 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+	periph_regs = syscon_regmap_lookup_by_phandle(np, "img,cr-periph");
+	if (IS_ERR(periph_regs))
+		return PTR_ERR(periph_regs);
+
+	if (of_property_read_u32(np, "img,ext-src-bank", &ext_src_bank)) {
+		dev_err(&pdev->dev, "No img,ext-src-bank property\n");
+		return -EINVAL;
+	}
+
+	if (ext_src_bank >= PISTACHIO_EVT_EXT_SRC_NUM_BANKS)
+		return -EINVAL;
+
+	regmap_update_bits(periph_regs, PISTACHIO_EVT_EXT_SRC_REG,
+			PISTACHIO_EVT_EXT_SRC_MASK, ext_src_bank);
+
 	if (of_property_read_u32(np, "img,clk-select", &clk_select)) {
 		dev_err(&pdev->dev, "No img,clk-select property\n");
 		return -EINVAL;
@@ -725,13 +840,23 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 	if (of_property_read_u32(np, "img,clk-rate", &rate))
 		rate = 0;
 
+	evt->audio_pll = devm_clk_get(&pdev->dev, "pll");
+	if (IS_ERR(evt->audio_pll))
+		return PTR_ERR(evt->audio_pll);
+
+	ret = clk_prepare_enable(evt->audio_pll);
+	if (ret)
+		return ret;
+
 	evt->clk_ref_a = devm_clk_get(&pdev->dev, "ref0");
-	if (IS_ERR(evt->clk_ref_a))
-		return PTR_ERR(evt->clk_ref_a);
+	if (IS_ERR(evt->clk_ref_a)) {
+		ret = PTR_ERR(evt->audio_pll);
+		goto err_pll;
+	}
 
 	ret = clk_prepare_enable(evt->clk_ref_a);
 	if (ret)
-		return ret;
+		goto err_pll;
 
 	evt->clk_ref_b = devm_clk_get(&pdev->dev, "ref1");
 	if (IS_ERR(evt->clk_ref_b)) {
@@ -752,6 +877,8 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 	ret = clk_prepare_enable(evt->clk_sys);
 	if (ret)
 		goto err_ref_b;
+
+	evt->sys_rate = clk_get_rate(evt->clk_sys);
 
 	evt->ref_names[0] = __clk_get_name(evt->clk_ref_a);
 	evt->ref_names[1] = __clk_get_name(evt->clk_ref_b);
@@ -788,9 +915,6 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 			goto err_clkp;
 	}
 
-	hrtimer_init(&evt->poll_timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-	evt->poll_timer.function = pistachio_evt_poll;
-
 	evt->cc.mask = PISTACHIO_EVT_COUNTER_MASK;
 	evt->cc.read = pistachio_evt_cc_read;
 
@@ -801,40 +925,17 @@ static int pistachio_evt_driver_probe(struct platform_device *pdev)
 
 	pistachio_evt_clk_rate_change(evt);
 
-	timecounter_init(&evt->tc, (const struct cyclecounter *)&evt->cc, 0);
-
-#ifdef CONFIG_ATU
-	audio_pll = devm_clk_get(&pdev->dev, "pll");
-	if (IS_ERR(audio_pll))
-		audio_pll = NULL;
-	ret = atu_cyclecounter_register(&evt->cc, audio_pll);
-	if(ret)
-		goto err_count;
-#else
-	pistachio_evt_start_poll_timer(evt);
-
-	evt->evt_clk_notifier.notifier_call = pistachio_evt_clk_notifier_cb;
-	ret = clk_notifier_register(evt->clk_ref_internal,
-			&evt->evt_clk_notifier);
+	ret = pistachio_evt_init(evt);
 	if (ret)
 		goto err_count;
-#endif
 
-	/*
-	 * 2nd layer of muxing for event timer sources.
-	 * Not useful, use identity mapping
-	 */
-	for (i = 0; i < 12; i++) {
-		pistachio_evt_writel(evt, i,
-			PISTACHIO_EVT_SOURCE_INTERNAL_START + (i * 0x4));
-	}
+	spin_lock(&pistachio_evt_list_spinlock);
+	list_add(&evt->list, &pistachio_evt_list);
+	spin_unlock(&pistachio_evt_list_spinlock);
 
 	return 0;
 
 err_count:
-#ifndef	CONFIG_ATU
-	hrtimer_cancel(&evt->poll_timer);
-#endif
 	pistachio_evt_stop_count(evt);
 	pistachio_evt_writel(evt, 0, PISTACHIO_EVT_TIMER_ENABLE);
 err_clkp:
@@ -847,6 +948,8 @@ err_ref_b:
 	clk_disable_unprepare(evt->clk_ref_b);
 err_ref_a:
 	clk_disable_unprepare(evt->clk_ref_a);
+err_pll:
+	clk_disable_unprepare(evt->audio_pll);
 
 	return ret;
 }
@@ -859,21 +962,20 @@ MODULE_DEVICE_TABLE(of, pistachio_evt_of_match);
 
 static int pistachio_evt_driver_remove(struct platform_device *pdev)
 {
-	struct pistachio_evt_data *evt = platform_get_drvdata(pdev);
+	struct pistachio_evt *evt = platform_get_drvdata(pdev);
 
-#ifdef CONFIG_ATU
-	atu_cyclecounter_unregister(&evt->cc);
-#else
-	clk_notifier_unregister(evt->clk_ref_internal, &evt->evt_clk_notifier);
-	hrtimer_cancel(&evt->poll_timer);
-#endif
-	of_clk_del_provider(evt->dev->of_node);
+	spin_lock(&pistachio_evt_list_spinlock);
+	list_del(&evt->list);
+	spin_unlock(&pistachio_evt_list_spinlock);
+	pistachio_evt_deinit(evt);
 	pistachio_evt_stop_count(evt);
 	pistachio_evt_writel(evt, 0, PISTACHIO_EVT_TIMER_ENABLE);
+	of_clk_del_provider(evt->dev->of_node);
 	clk_unregister(evt->clk_ref_internal);
 	clk_disable_unprepare(evt->clk_sys);
 	clk_disable_unprepare(evt->clk_ref_b);
 	clk_disable_unprepare(evt->clk_ref_a);
+	clk_disable_unprepare(evt->audio_pll);
 
 	return 0;
 }

@@ -1,10 +1,8 @@
-Imagination Technologies Pistachio Bring-Up Board (BuB) Audio Card Driver
-
-
+Imagination Technologies Pistachio Audio Card Driver
 
 Required properties:
 
-  - compatible : Compatible list, must contain "img,pistachio-bub-audio"
+  - compatible : Compatible list, must contain "img,pistachio-audio"
 
   - clocks : Contains an entry for each entry in clock-names
 
@@ -13,253 +11,242 @@ Required properties:
         "i2s_mclk"   The i2s reference clock
                      Also connected to i2s_out_0_mclk output
         "dac_clk"    Dac reference clock. Connected to i2s_dac_clk output
-        "evt_clk"    Event timer internal clock
 
-  - img,daughterboard : Contains daughterboard type. Valid identifiers
-                        (dt-bindings/sound/pistachio-bub-audio.h):
-
-        PISTACHIO_DAUGHTERBOARD_NONE       No daughterboard is connected, or
-                                           CN20 is not bridged
-        PISTACHIO_DAUGHTERBOARD_CODEC      The codec daughterboard is connected
-                                           and CN20 is bridged
-        PISTACHIO_DAUGHTERBOARD_BREAKOUT   The breakout daughterboard is
-                                           connected and CN20 is bridged
-
-  - img,mclk : Contains the mclk (master clock) source used by any codecs or
-               other external components.
-               Valid identifiers (dt-bindings/sound/pistachio-bub-audio.h):
-
-        PISTACHIO_MCLK_NONE      No mclk is required, or mclk is provided
-                                 externally with no software intervention
-                                 required to compenstate for differing sample
-                                 rates
-
-        PISTACHIO_MCLK_I2S       mclk is provided by the i2s_out_0_mclk output
-                                 from pistachio SoC. This clock is shared with
-                                 the internal i2s out controller
-
-        PISTACHIO_MCLK_DAC_CLK   mclk is provided by the i2s_dac_clk output
-                                 from pistachio SoC
-
-  - img,cr-periph : Must contain a phandle to the peripheral control syscon
+  - img,cr-periph : phandle of the peripheral control syscon
                     node which contains the i2s loopback control registers
 
-  - img,cr-top : Must contain a phandle to the top level control syscon
-                    node which contains the internal dac control registers
-
-  - img,event-timer : Must contain a reference to the event timer device node
+  - img,event-timer : phandle of event timer
 
 Optional properties:
 
-  - img,mclk-max : Contains a max constraint for the mclk rate. By default,
-                   the max rate is set to ULONG_MAX when the breakout board is
-                   used, else the max frequency supported by the pcm3060 and
-                   pcm3168a codecs (36.864Mhz)
+  - img,widgets : Please refer to widgets.txt
 
-  - widgets : Please refer to widgets.txt
-
-  - routing : A list of the connections between audio components.
+  - img,routing : A list of the connections between audio components.
               Each entry is a pair of strings, the first being the
               connection's sink, the second being the connection's
               source
 
+  - img,mute-gpio : phandle of the mute gpio
+
+  - img,hp-det-gpio : phandle of headphone detect gpio
+
+  - img,i2s-clk-loopback : LRCLK+BCLK signals for i2s out and i2s in
+			   controllers are connected internally
+
 Optional subnodes:
 
-  - spdif_out : Contains spdif out information
+  - spdif-out : Contains spdif out information
 
-  - spdif_in : Contains spdif in information
+  - spdif-in : Contains spdif in information
 
-  - parallel_out : Contains parallel out information
+  - parallel-out : Contains parallel out information
 
-  - i2s_out : Contais i2s out information
+  - i2s-out : Contains i2s out information
 
-  - i2s_in : Contains i2s in information
+  - i2s-in : Contains i2s in information
 
-Required spdif_out subnode properties:
+Required spdif-out subnode properties:
 
   - cpu-dai : phandle of spdif out cpu dai
 
-Required spdif_in subnode properties:
+Required spdif-in subnode properties:
 
   - cpu-dai : phandle of spdif in cpu dai
 
-Required parallel_out subnode properties:
+Required parallel-out subnode properties:
 
   - cpu-dai : phandle of parallel out cpu dai
 
-Optional parallel_out subnode properties:
+  - sound-dai : phandle of internal dac
 
-  - tpa6130a2 : phandle of the tpa6130a2 codec. Can be omitted
-                if the codec is bypassed
-
-Required i2s_out subnode properties:
+Required i2s-out subnode properties:
 
   - cpu-dai : phandle of i2s out cpu dai
 
-  - cpu-format : i2s out cpu format. "i2s" and "left_j" are supported by
-                 the pistachio BuB iteration of the img i2s out controller
+  - format : I2S out format. "i2s" and "left_j" are supported by
+		     the Pistachio iteration of the i2s out controller
 
-Optional i2s_out subnode properties:
+Optional i2s-out subnode properties:
 
-  - cpu-bitclock-inversion : i2s out cpu BCLK inversion
+  - bitclock-inversion : i2s out BCLK inversion
 
-  - cpu-frame-inversion : i2s out cpu LRCLK inversion
+  - frame-inversion : i2s out LRCLK inversion
 
-  - cpu-continuous-clock : i2s out BCLK and LRCLK always active
+  - continuous-clock : i2s out BCLK and LRCLK always active
 
-  - pcm3060 : phandle to pcm3060 codec (DAC). This should be present if
-              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_NONE and
-              the main board switches are set to I2C or SPI control for the
-              pcm3060. Do not include this if hardware control is selected
-              for the pcm3060 codec. This codec is connected to i2s out
-              channel 0
+Optional i2s-out subnodes:
 
-  - pcm3060-format : i2s format. "i2s", "left_j" and "right_j" are supported
-                     by the pcm3060
+  - <codec-name> : Contains codec information. <codec-name> will be used as
+		   the prefix for the codec. This name must be unique for
+		   each individual codec (unique codec device node), and
+		   cannot be equal to "internal-dac". The name
+		   should be short to avoid control name truncation
 
-  - pcm3060-bitclock-inversion : i2s BCLK inversion used by pcm3060
-
-  - pcm3060-frame-inversion : i2s LRCLK inversion used by pcm3060
-
-  - pcm3168a-1 : phandle to 1st pcm3168a codec (DAC). This should be present if
-              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_CODEC and
-              the codec daughterboard switches are set to I2C or SPI control
-              for the pcm3168a codecs. Do not include this if hardware control
-              is selected for the pcm3168a codecs. This codec is connected to
-              i2s out channels 0,1,2
-
-  - pcm3168a-1-format : i2s format. "i2s", "left_j", "right_j", "dsp_a" and
-                        "dsp_b" are supported by the pcm3168a
-
-  - pcm3168a-1-bitclock-inversion : i2s BCLK inversion used by pcm3168a-1
-
-  - pcm3168a-1-frame-inversion : i2s LRCLK inversion used by pcm3168a-1
-
-  - pcm3168a-2 : phandle to 2nd pcm3168a codec (DAC). This should be present if
-              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_CODEC and
-              the codec daughterboard switches are set to I2C or SPI control
-              for the pcm3168a codecs. Do not include this if hardware control
-              is selected for the pcm3168a codecs. This codec is connected to
-              i2s out channels 3,4,5
-
-  - pcm3168a-2-format : i2s format. "i2s", "left_j", "right_j", "dsp_a" and
-                        "dsp_b" are supported by the pcm3168a
-
-  - pcm3168a-2-bitclock-inversion : i2s BCLK inversion used by pcm3168a-2
-
-  - pcm3168a-2-frame-inversion : i2s LRCLK inversion used by pcm3168a-2
-
-  - clock-master : phandle of the i2s out BCLK and LRCLK master. If these
-                   clocks are not required, or provided externally under
-                   hardware control, this may be omitted
-
-Required i2s_out subnode properties:
+Required i2s-in subnode properties:
 
   - cpu-dai : phandle of i2s in cpu dai
 
-  - cpu-format : i2s in cpu format. "i2s" and "left_j" are supported by
-                 the pistachio BuB iteration of the img i2s in controller
+  - format : i2s in format. "i2s" and "left_j" are supported by
+	     the Pistachio iteration of the i2s in controller
 
-Optional i2s_out subnode properties:
+Optional i2s-in subnode properties:
 
-  - cpu-bitclock-inversion : i2s in cpu BCLK inversion
+  - bitclock-inversion : i2s out BCLK inversion
 
-  - cpu-frame-inversion : i2s in cpu LRCLK inversion
+  - frame-inversion : i2s out LRCLK inversion
 
-  - pcm3060 : phandle to pcm3060 codec (ADC). This should be present if
-              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_NONE and
-              the main board switches are set to I2C or SPI control for the
-              pcm3060. Do not include this if hardware control is selected
-              for the pcm3060 codec. This codec is connected to i2s in
-              channel 0
+  - continuous-clock : i2s out BCLK and LRCLK always active
 
-  - pcm3060-format : i2s format. "i2s", "left_j" and "right_j" are supported
-                     by the pcm3060
+Optional i2s-in subnodes:
 
-  - pcm3060-bitclock-inversion : i2s BCLK inversion used by pcm3060
+  - <codec-name> : Contains codec information. <codec-name> will be used as
+		   the prefix for the codec. This name must be unique for
+		   each individual codec (unique codec device node), and
+		   cannot be equal to "internal-dac". The name
+		   should be short to avoid control name truncation
 
-  - pcm3060-frame-inversion : i2s LRCLK inversion used by pcm3060
+Required <codec-name> subnode properties:
 
-  - pcm3168a-1 : phandle to 1st pcm3168a codec (ADC). This should be present if
-              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_CODEC and
-              the codec daughterboard switches are set to I2C or SPI control
-              for the pcm3168a codecs. Do not include this if hardware control
-              is selected for the pcm3168a codecs. This codec is connected to
-              i2s in channels 0,1,2
+  - mclk : Contains the mclk (master clock) used by the DAC/ADC.
+	   Valid identifiers (dt-bindings/sound/pistachio-audio.h):
 
-  - pcm3168a-1-format : i2s format. "i2s", "left_j", "right_j", "dsp_a" and
-                        "dsp_b" are supported by the pcm3168a
+	       PISTACHIO_MCLK_NONE      No mclk is required, or mclk is
+					provided externally with no software
+					intervention required to compenstate
+					for differing sample rates
 
-  - pcm3168a-1-bitclock-inversion : i2s BCLK inversion used by pcm3168a-1
+	       PISTACHIO_MCLK_I2S       mclk is provided by the i2s_out_0_mclk
+					output from pistachio SoC. This clock
+					is shared with the internal i2s out
+					controller
 
-  - pcm3168a-1-frame-inversion : i2s LRCLK inversion used by pcm3168a-1
+	       PISTACHIO_MCLK_DAC_CLK   mclk is provided by the i2s_dac_clk
+					output from pistachio SoC
 
-  - pcm3168a-2 : phandle to 2nd pcm3168a codec (ADC). This should be present if
-              img,daughterboard is set to PISTACHIO_DAUGHTERBOARD_CODEC and
-              the codec daughterboard switches are set to I2C or SPI control
-              for the pcm3168a codecs. Do not include this if hardware control
-              is selected for the pcm3168a codecs. This codec is connected to
-              i2s in channels 3,4,5
+Required <codec-name> subnode properties if mclk is not PISTACHIO_MCLK_NONE:
 
-  - pcm3168a-2-format : i2s format. "i2s", "left_j", "right_j", "dsp_a" and
-                        "dsp_b" are supported by the pcm3168a
+  - mclk-fs : Contains the set of fs ratios the DAC/ADC accepts (Nfs for
+	      sample rate r specifies the master clock input to the DAC is
+	      N times r). It is assumed this set of ratios is applicable to
+	      any given sample rate where this does not lead to a violation
+	      of the minimum/maximum frequencies specified by mclk-min-freq
+	      and mclk-max-freq respectively
 
-  - pcm3168a-2-bitclock-inversion : i2s BCLK inversion used by pcm3168a-2
+  - mclk-min-freq : Contains the minimum frequency the DAC/ADC accepts for
+		    its master clock input
 
-  - pcm3168a-2-frame-inversion : i2s LRCLK inversion used by pcm3168a-2
+  - mclk-max-freq : Contains the maximum frequency the DAC/ADC accepts for
+		    its master clock input
 
-  - clock-master : phandle of the i2s in BCLK and LRCLK master. If these
-                   clocks are not required, or provided externally under
-                   hardware control, this may be omitted. There is an internal
-                   loopback available that allows the i2s out BCLK/LRCLK to be
-                   used for the i2s in block. Link to the i2s out cpu node
-                   to use this
+Optional <codec-name> subnode properties:
 
-Example:
+  - sound-dai : phandle of the codec. If the codec does not accept/require
+		software configuration, this can be omitted
+
+  - mclk-index : Index of the mclk, used for snd_soc_dai_set_sysclk call.
+		 0 is used if this property is omitted
+
+  - frame-master : Indicates this codec is the LRCLK master
+
+  - bitclock-master : Indicates this codec is the BCLK master
+
+  frame-master and bitclock-master cannot exist in more than one of the codec
+  subnodes
+
+  frame-master and bitclock-master cannot be used within i2s out codec subnodes
+  as the Pistachio iteration of the i2s out controller accepts master mode
+  only
+
+  frame-master and bitclock-master can be omitted if img,i2s-clk-loopback is
+  used, or if LRCLK/BCLK generation does not require software intervention (eg
+  a codec operating in hardware-mode)
+
+Example 1 (Pistachio Bring-Up Board With Codec Daughterboard Inserted):
+
+All audio components present on board. 2x pcm3168a codecs provide 3 i2s in
+and out channels each. dac_clk provides the single master clock to both
+codecs. The Pistachio i2s out controller is the LRCLK+BCLK master for the DAC
+path. The second pcm3168a codec is the LRCLK+BCLK master for the ADC path
 
 pistachio_audio_card {
-	compatible = "img,pistachio-bub-audio";
+	compatible = "img,pistachio-audio";
 
-	clocks = <&clk_core CLK_AUDIO_PLL &clk_core CLK_I2S_DIV
-	          &clk_core CLK_AUDIO &event_timer>;
-	clock-names = "audio_pll", "i2s_mclk", "dac_clk", "evt_clk";
+	clocks = <&clk_core CLK_AUDIO_PLL>,
+		 <&clk_core CLK_I2S_DIV>,
+		 <&clk_core CLK_AUDIO>;
+	clock-names = "audio_pll", "i2s_mclk", "dac_clk";
 
-	img,daughterboard = <PISTACHIO_DAUGHTERBOARD_CODEC>;
-	img,mclk = <PISTACHIO_MCLK_DAC_CLK>;
 	img,cr-periph = <&cr_periph>;
-	img,cr-top = <&cr_top>;
 	img,event-timer = <&event_timer>;
 
-	spdif_out: spdif_out {
-		cpu-dai = <&spdif_out_cpu>;
+	img,mute-gpio = <&gpio5 1 GPIO_ACTIVE_LOW>;
+	img,hp-det-gpio = <&gpio5 3 GPIO_ACTIVE_LOW>;
+
+	img,widgets = "Headphone", "Headphones",
+		      "Speaker", "Speakers",
+		      "Line", "RCA Out";
+
+	img,routing = "Headphones", "internal-dac AOUTL",
+		      "Headphones", "internal-dac AOUTR",
+		      "Speakers", "internal-dac AOUTL",
+		      "Speakers", "internal-dac AOUTR",
+		      "RCA Out", "internal-dac AOUTL",
+		      "RCA Out", "internal-dac AOUTR";
+
+	spdif-out {
+		cpu-dai = <&spdif_out>;
 	};
 
-	spdif_in: spdif_in {
-		cpu-dai = <&spdif_in_cpu>;
+	spdif-in {
+		cpu-dai = <&spdif_in>;
 	};
 
-	parallel_out: parallel_out {
-		cpu-dai = <&parallel_out_cpu>;
-		tpa6130a2 = <&tpa6130a2>;
+	parallel-out {
+		cpu-dai = <&parallel_out>;
+		sound-dai = <&internal_dac>;
 	};
 
-	i2s_out: i2s_out {
-		cpu-dai = <&i2s_out_cpu>;
-		cpu-format = "i2s";
-		pcm3168a-1 = <&pcm3168a_1 0>;
-		pcm3168a-1-format = "i2s";
-		pcm3168a-2 = <&pcm3168a_2 0>;
-		pcm3168a-2-format = "i2s";
-		clock-master = <&i2s_out_cpu>;
+	i2s-out {
+		cpu-dai = <&i2s_out>;
+		format = "i2s";
+
+		pcm3168a-1 {
+			mclk = <PISTACHIO_MCLK_DAC_CLK>;
+			mclk-fs = <128 192 256 384 512 768>;
+			mclk-min-freq = <2048000>;
+			mclk-max-freq = <36864000>;
+			sound-dai = <&pcm3168a_1 0>;
+		};
+
+		pcm3168a-2 {
+			mclk = <PISTACHIO_MCLK_DAC_CLK>;
+			mclk-fs = <128 192 256 384 512 768>;
+			mclk-min-freq = <2048000>;
+			mclk-max-freq = <36864000>;
+			sound-dai = <&pcm3168a_2 0>;
+		};
 	};
 
-	i2s_in: i2s_in {
-		cpu-dai = <&i2s_in_cpu>;
-		cpu-format = "i2s";
-		pcm3168a-1 = <&pcm3168a_1 1>;
-		pcm3168a-1-format = "i2s";
-		pcm3168a-2 = <&pcm3168a_2 1>;
-		pcm3168a-2-format = "i2s";
-		clock-master = <&pcm3168a_2 1>;
+	i2s-in {
+		cpu-dai = <&i2s_in>;
+		format = "i2s";
+
+		pcm3168a-1 {
+			mclk = <PISTACHIO_MCLK_DAC_CLK>;
+			mclk-fs = <256 384 512 768>;
+			mclk-min-freq = <2048000>;
+			mclk-max-freq = <36864000>;
+			sound-dai = <&pcm3168a_1 1>;
+		};
+
+		pcm3168a-2 {
+			mclk = <PISTACHIO_MCLK_DAC_CLK>;
+			mclk-fs = <256 384 512 768>;
+			mclk-min-freq = <2048000>;
+			mclk-max-freq = <36864000>;
+			sound-dai = <&pcm3168a_2 1>;
+			frame-master;
+			bitclock-master;
+		};
 	};
 };
