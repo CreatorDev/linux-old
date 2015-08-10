@@ -31,6 +31,7 @@
 
 #define SPI_NAND_FEATURE_REG		0xb0
 #define SPI_NAND_ECC_EN			BIT(4)
+#define SPI_NAND_QUAD_EN		BIT(0)
 
 #define SPI_NAND_STATUS_REG		0xc0
 #define SPI_NAND_STATUS_REG_ECC_MASK	0x3
@@ -83,6 +84,21 @@ static int spi_nand_disable_ecc(struct spi_nand *snand)
 	return 0;
 }
 
+static int spi_nand_enable_quad(struct spi_nand *snand)
+{
+	int ret;
+
+	ret = snand->read_reg(snand, SPI_NAND_FEATURE_REG, snand->buf);
+	if (ret)
+		return ret;
+
+	snand->buf[0] |= SPI_NAND_QUAD_EN;
+	ret = snand->write_reg(snand, SPI_NAND_FEATURE_REG, snand->buf);
+	if (ret)
+		return ret;
+
+	return 0;
+}
 /*
  * Wait until the status register busy bit is cleared.
  * Returns a negatie errno on error or time out, and a non-negative status
@@ -264,6 +280,12 @@ static int spi_nand_read_page(struct spi_nand *snand, unsigned int page_addr,
 		}
 	}
 
+	/* Enable quad mode */
+	ret = spi_nand_enable_quad(snand);
+	if (ret) {
+		dev_err(snand->dev, "error %d enabling quad mode\n", ret);
+		return ret;
+	}
 	/* Get page from the device cache into our internal buffer */
 	ret = snand->read_cache(snand, page_offset, length, snand->data_buf);
 	if (ret < 0) {
@@ -470,6 +492,11 @@ int spi_nand_register(struct spi_nand *snand, struct nand_flash_dev *flash_ids)
 	snand->buf = kmalloc(SPI_NAND_CMD_BUF_LEN, GFP_KERNEL);
 	if (!snand->buf)
 		return -ENOMEM;
+
+	/* This is enabled at device power up but we'd better make sure */
+	ret = spi_nand_enable_ecc(snand);
+	if (ret)
+		return ret;
 
 	/* Preallocate buffer for flash identification (NAND_CMD_READID) */
 	snand->buf_size = SPI_NAND_CMD_BUF_LEN;
