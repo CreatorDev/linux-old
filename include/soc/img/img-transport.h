@@ -43,15 +43,19 @@
 typedef void (*img_transport_handler)(u16 user_data);
 
 /*
- * Note that this function may sleep forever when,
- * for example, RPU is unable to respond.
- *
- * Possible return values:
- * 0		: RPU has been notified
+ * The following 4 procedures issue pokes to the RPU. They are guaranteed not
+ * to sleep.
+ */
+
+/*
+ * May spin forever when, for example, RPU is unable to respond. If you can't
+ * afford that, use *_timeout variant.
  */
 void img_transport_notify(u16 user_data, int user_id);
 
 /*
+ * Times out after jiffies_timeout kernel ticks have passed.
+ *
  * Possible return values:
  * @ -ETIME	: request timed out
  * @ 0		: RPU has been notified
@@ -61,6 +65,32 @@ int __must_check img_transport_notify_timeout(u16 user_data,
 					long jiffies_timeout);
 
 /*
+ * May spin forever when, for example, RPU is unable to respond. If you can't
+ * afford that, use *_timeout variant.
+ */
+void img_transport_notify_callback(u16 user_data,
+					int user_id,
+					void (*poke_ready)(void *),
+					void *poke_ready_arg);
+
+/*
+ * Times out after jiffies_timeout kernel ticks have passed. 'poke_ready' called
+ * just before the poke is issued.
+ *
+ * Possible return values:
+ * @ -ETIME	: request timed out
+ * @ 0		: RPU has been notified
+ */
+int __must_check img_transport_notify_callback_timeout(u16 user_data,
+					int user_id,
+					long jiffies_timeout,
+					void (*poke_ready)(void *),
+					void *poke_ready_arg);
+
+/*
+ * Register a routine which will be invoked whenever a message for client_id
+ * is received.
+ *
  * Possible return values:
  *  @ -EBADSLT	: id unavailable
  *  @  0	: callback registered
@@ -69,6 +99,8 @@ int img_transport_register_callback(img_transport_handler,
 					unsigned int client_id);
 
 /*
+ * Remove previously registerd routine.
+ *
  * Possible return values:
  *  @ -EBADSLT	: client id not found
  *  @  0	: callback removed
