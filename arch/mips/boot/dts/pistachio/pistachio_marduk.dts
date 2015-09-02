@@ -83,6 +83,20 @@
 		clock-frequency = <16000000>;
 		clock-output-names = "cc2520_ext_clock";
 	};
+
+	gpio_keys {
+		compatible = "gpio-keys";
+		switch@1 {
+			label = "SWITCH 1";
+			linux,code = <0x101>; /* BTN_1 */
+			gpios = <&gpio2 13 GPIO_ACTIVE_LOW>;
+		};
+		switch@2 {
+			label = "SWITCH 2";
+			linux,code = <0x102>; /* BTN_2 */
+			gpios = <&gpio2 14 GPIO_ACTIVE_LOW>;
+		};
+	};
 };
 
 &spfi0 {
