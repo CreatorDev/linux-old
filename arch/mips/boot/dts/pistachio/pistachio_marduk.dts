@@ -96,7 +96,7 @@
 	cc2520@0 {
 		compatible = "ti,cc2520";
 		reg = <0>;
-		spi-max-frequency = <8000000>;
+		spi-max-frequency = <4000000>;
 		fifo-gpio = <&gpio3 4 GPIO_ACTIVE_HIGH>;
 		fifop-gpio = <&gpio3 5 GPIO_ACTIVE_HIGH>;
 		sfd-gpio = <&gpio4 15 GPIO_ACTIVE_HIGH>;
@@ -110,7 +110,7 @@
 		compatible = "nxp,sc16is752";
 		reg = <1>;
 		clocks = <&cc2520_ext_clk>;
-		spi-max-frequency = <15000000>;
+		spi-max-frequency = <4000000>;
 		interrupt-parent = <&gpio0>;
 		interrupts = <11 IRQ_TYPE_EDGE_FALLING>;
 		gpio-controller;
