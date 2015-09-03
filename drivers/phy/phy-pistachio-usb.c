@@ -21,6 +21,10 @@
 
 #include <dt-bindings/phy/phy-pistachio-usb.h>
 
+#define USB_PHY_CONTROL0				0x00
+#define USB_PHY_CONTROL0_OTG_DRVVBUS_SHIFT		11
+#define USB_PHY_CONTROL0_OTG_DRVVBUS_MASK		1
+
 #define USB_PHY_CONTROL1				0x04
 #define USB_PHY_CONTROL1_FSEL_SHIFT			2
 #define USB_PHY_CONTROL1_FSEL_MASK			0x7
@@ -38,6 +42,7 @@ struct pistachio_usb_phy {
 	struct device *dev;
 	struct regmap *cr_top;
 	struct clk *phy_clk;
+	bool vbus_drive;
 	unsigned int refclk;
 };
 
@@ -69,6 +74,14 @@ static int pistachio_usb_phy_power_on(struct phy *phy)
 			   USB_PHY_STRAP_CONTROL_REFCLK_MASK <<
 			   USB_PHY_STRAP_CONTROL_REFCLK_SHIFT,
 			   p_phy->refclk << USB_PHY_STRAP_CONTROL_REFCLK_SHIFT);
+
+	if (p_phy->vbus_drive) {
+		/* allow USB block to control VBUS */
+		regmap_update_bits(p_phy->cr_top, USB_PHY_CONTROL0,
+				   USB_PHY_CONTROL0_OTG_DRVVBUS_MASK <<
+				   USB_PHY_CONTROL0_OTG_DRVVBUS_SHIFT,
+				   1 << USB_PHY_CONTROL0_OTG_DRVVBUS_SHIFT);
+	}
 
 	rate = clk_get_rate(p_phy->phy_clk);
 	if (p_phy->refclk == REFCLK_XO_CRYSTAL && rate != 12000000) {
@@ -166,6 +179,8 @@ static int pistachio_usb_phy_probe(struct platform_device *pdev)
 		dev_err(p_phy->dev, "No reference clock selector specified\n");
 		return ret;
 	}
+
+	p_phy->vbus_drive = of_property_read_bool(p_phy->dev->of_node, "enable-vbus-drive");
 
 	phy = devm_phy_create(p_phy->dev, NULL, &pistachio_usb_phy_ops);
 	if (IS_ERR(phy)) {
