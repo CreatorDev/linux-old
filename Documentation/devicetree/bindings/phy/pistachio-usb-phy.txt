@@ -15,6 +15,9 @@ Required properties:
 Optional properties:
 --------------------
  - phy-supply: USB VBUS supply.  Must supply 5.0V.
+ - enable-vbus-drive: include if USB block should drive the VBUS on mfio86,
+		      this will override the primary function RPU_L_PLL lock signal
+		      available on this pin.
 
 Example:
 --------
@@ -26,4 +29,5 @@ usb_phy: usb-phy {
 	img,refclk = <REFCLK_CLK_CORE>;
 	img,cr-top = <&cr_top>;
 	#phy-cells = <0>;
+	enable-vbus-drive;
 };
