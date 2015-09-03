@@ -808,6 +808,14 @@
 				function = "i2s_in";
 			};
 		};
+
+		usb_pwr_on_pins: usb-pwr-on-pins {
+			usb-pwr-on {
+				pins = "mfio86";
+				function = "bt_pll_lock";
+			};
+		};
+
 	};
 
 	timer: timer@18102000 {
