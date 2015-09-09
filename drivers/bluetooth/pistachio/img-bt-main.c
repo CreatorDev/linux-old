@@ -40,7 +40,8 @@
 
 #include <soc/img/img-transport.h>
 
-#include "circ-buf-ext.h"
+#include "circ-buf-oneway.h"
+#include "etrace.h"
 #include "gateway.h"
 #include "payload.h"
 
@@ -75,8 +76,8 @@ static const resource_size_t buffer_length = 0x800;
 static struct workqueue_struct *img_bt_workqueue;
 
 static struct {
-	struct circ_buf_ext tx;
-	struct circ_buf_ext rx;
+	struct circ_buf_out tx;
+	struct circ_buf_in rx;
 	phys_addr_t phys_base;
 	ioaddr_t virt_base;
 	resource_size_t length;
@@ -124,34 +125,66 @@ static struct message_xfer *prepare_work(work_func_t todo, unsigned long data)
 	return work;
 }
 
+static void return_work(struct message_xfer *work)
+{
+	kfifo_put(&work_depot, work);
+}
+
 static unsigned char next_char(void *buffer, unsigned idx)
 {
-	struct circ_buf_ext *rx;
+	struct circ_buf_in *rx;
 	u8 retval;
 
-	rx = (struct circ_buf_ext *)buffer;
+	rx = (struct circ_buf_in *)buffer;
 
-	retval = (u8)ioread8((void __iomem *)circ_buf_ext_read_offset(rx, idx));
+	retval = (u8)ioread8((void __iomem *)circ_buf_in_read_offset(rx, idx));
 
 	return retval;
 }
 
-static void payload_to_circ_buf_ext(
+static void payload_to_circ_buf_out(
 		const struct payload *pld,
-		struct circ_buf_ext *buf)
+		struct circ_buf_out *buf)
 {
 	char c;
 	int i;
 	int length = payload_length(pld);
 
-	print_hex_dump(KERN_DEBUG, "payload: ", DUMP_PREFIX_NONE,
-			payload_length(pld), 1, payload_raw(pld),
-			payload_length(pld), 1);
 	for (i = 0; i < length; i++) {
 		c = payload_at(pld, i);
-		iowrite8(c, (void __iomem *)circ_buf_ext_write_offset(buf, i));
+		iowrite8(c, (void __iomem *)circ_buf_out_write_offset(buf, i));
 	}
-	circ_buf_ext_take(buf, length);
+	circ_buf_out_write_done(buf, length);
+}
+
+static void do_tx_backlog(void)
+{
+	struct payload *pld;
+	int dummy, length_sum = 0;
+
+	if (kfifo_is_empty(&tx_backlog))
+		return;
+
+	while (kfifo_peek(&tx_backlog, &pld) &&
+		circ_buf_out_space(&xmit_buffers.tx) >= payload_length(pld)) {
+
+		length_sum += payload_length(pld);
+		/*
+		 * The following call must succeed because we checked
+		 * kfifo_peek and the fifo is managed only by this
+		 * background thread.
+		 *
+		 * Dummy read just to make __must_check_helper satisfied
+		 */
+		dummy = kfifo_get(&tx_backlog, &pld);
+		payload_to_circ_buf_out(pld, &xmit_buffers.tx);
+		payload_delete(pld);
+	}
+
+	if (length_sum > 0) {
+		img_transport_notify(RPU_REQ((u16)length_sum), BLUETOOTH_ID);
+		trace_hst_req_execd_catchup(BLUETOOTH_ID, length_sum);
+	}
 }
 
 /*
@@ -163,9 +196,13 @@ static void ack_from_controller(struct work_struct *tbd)
 	struct message_xfer *work = container_of(tbd, struct message_xfer, tbd);
 	u16 payload_length = work->req_length;
 
-	circ_buf_ext_give(&xmit_buffers.tx, payload_length);
+	circ_buf_out_write_rcvd(&xmit_buffers.tx, payload_length);
 
-	kfifo_put(&work_depot, work);
+	return_work(work);
+
+	do_tx_backlog();
+
+	trace_ctl_ack_execd(BLUETOOTH_ID, payload_length);
 }
 
 static void req_from_controller(struct work_struct *tbd)
@@ -178,18 +215,10 @@ static void req_from_controller(struct work_struct *tbd)
 	 * This is the length of the data that has just arrived
 	 */
 	user_data_length = work->req_length;
-
-	/*
-	 * Acknowledge the reception of new data
-	 * by updating the tracking structure accordingly.
-	 * Assume the other side behaves well and doesn't
-	 * write beyond the buffer capacity.
-	 */
-	circ_buf_ext_take(&xmit_buffers.rx, user_data_length);
-
 	if (0 == user_data_length)
 		goto exit;
 
+	do_tx_backlog();
 	/*
 	 * Push messages going from the controller
 	 */
@@ -198,11 +227,12 @@ static void req_from_controller(struct work_struct *tbd)
 	/* TODO: service this call's failure */
 	gateway_send(pld);
 
-	circ_buf_ext_give(&xmit_buffers.rx, user_data_length);
+	circ_buf_in_read_done(&xmit_buffers.rx, user_data_length);
 	img_transport_notify(RPU_ACK(user_data_length), BLUETOOTH_ID);
 
 exit:
-	kfifo_put(&work_depot, work);
+	return_work(work);
+	trace_ctl_req_execd(BLUETOOTH_ID, user_data_length);
 }
 
 static void req_to_controller(struct work_struct *tbd)
@@ -218,58 +248,29 @@ static void req_to_controller(struct work_struct *tbd)
 	}
 
 	space_needed = payload_length(pld);
-	space_available = circ_buf_ext_space(&xmit_buffers.tx);
+	space_available = circ_buf_out_space(&xmit_buffers.tx);
 	if (space_needed <= space_available) {
 		/*
 		 * Process message going to the controller
 		 */
-		payload_to_circ_buf_ext(pld, &xmit_buffers.tx);
+		payload_to_circ_buf_out(pld, &xmit_buffers.tx);
 		payload_delete(pld);
 		img_transport_notify(RPU_REQ(space_needed), BLUETOOTH_ID);
+		trace_hst_req_execd_sent(BLUETOOTH_ID, space_needed);
 	} else {
 		/*
 		 * Save for backlog processing, which should be fired on every
 		 * poke confirmation and controller ACK
 		 */
-		if (kfifo_put(&tx_backlog, pld)) {
+		if (!kfifo_put(&tx_backlog, pld)) {
 			diagerrn("no space in backlog, dropping payload");
 			payload_delete(pld);
 		}
+		trace_hst_req_execd_delayed(BLUETOOTH_ID, space_needed);
 	}
 
 exit:
-	kfifo_put(&work_depot, work);
-}
-
-static void do_tx_backlog(struct work_struct *tbd)
-{
-	struct payload *pld;
-	int dummy, length_sum = 0;
-	struct message_xfer *work = container_of(tbd, struct message_xfer, tbd);
-
-	if (kfifo_is_empty(&tx_backlog))
-		goto exit;
-
-	while (kfifo_peek(&tx_backlog, &pld) &&
-		circ_buf_ext_space(&xmit_buffers.tx) >= payload_length(pld)) {
-
-		length_sum += payload_length(pld);
-		/*
-		 * The following call must succeed because we checked
-		 * kfifo_peek and the fifo is managed only by this
-		 * background thread.
-		 *
-		 * Dummy read just to make __must_check_helper satisfied
-		 */
-		dummy = kfifo_get(&tx_backlog, &pld);
-		payload_to_circ_buf_ext(pld, &xmit_buffers.tx);
-		payload_delete(pld);
-	}
-
-	img_transport_notify(RPU_REQ((u16)length_sum), BLUETOOTH_ID);
-
-exit:
-	(void)kfifo_put(&work_depot, work);
+	return_work(work);
 }
 
 /*
@@ -277,44 +278,43 @@ exit:
  */
 static void handle_gateway_message(struct payload *pld)
 {
-	struct message_xfer *backlog = prepare_work(do_tx_backlog, 1);
 	struct message_xfer *work = prepare_work(req_to_controller,
 			(unsigned long)pld);
-	work->pld = pld;
-	if (NULL == work || NULL == backlog) {
+	if (NULL == work) {
 		diagerrn(
 			"no more free work structures, payload dropped");
 		payload_delete(pld);
 		return;
 	}
-	if (!queue_work(img_bt_workqueue, &backlog->tbd) ||
-			!queue_work(img_bt_workqueue, &work->tbd)) {
+	trace_hst_req_sched(BLUETOOTH_ID, payload_length(pld));
+	work->pld = pld;
+	if (!queue_work(img_bt_workqueue, &work->tbd)) {
 		diagerrn("bug : work already scheduled");
 	}
 }
 
 static void handle_controller_message(u16 user_data)
 {
-	struct message_xfer *work1, *work2;
+	struct message_xfer *work;
 	unsigned int content;
 	content = CONTENT(user_data);
 	switch (TYPE(user_data)) {
 	case ACK:
 		/* An acknowledgment has been received */
-		work1 = prepare_work(ack_from_controller, content);
-		work1->req_length = content;
+		work = prepare_work(ack_from_controller, content);
+		work->req_length = content;
 		/* Process whatever may be pending in the TX backlog */
-		work2 = prepare_work(do_tx_backlog, 0);
-		if (NULL == work1 || NULL == work2)
+		if (NULL == work)
 			diagerrn("no more free work structures");
-		queue_work(img_bt_workqueue, &work1->tbd);
-		queue_work(img_bt_workqueue, &work2->tbd);
+		trace_ctl_ack_sched(BLUETOOTH_ID, work->req_length);
+		queue_work(img_bt_workqueue, &work->tbd);
 		break;
 	case REQUEST:
 		/* A data request has arrived */
-		work1 = prepare_work(req_from_controller, content);
-		work1->req_length = content;
-		queue_work(img_bt_workqueue, &work1->tbd);
+		work = prepare_work(req_from_controller, content);
+		work->req_length = content;
+		trace_ctl_req_sched(BLUETOOTH_ID, work->req_length);
+		queue_work(img_bt_workqueue, &work->tbd);
 		break;
 	default:
 		errn("received unknown message type from controller");
@@ -336,7 +336,6 @@ static int img_bt_pltfr_memsetup(void)
 
 static void img_bt_pltfr_memsetup_rollback(void)
 {
-	destroy_workqueue(img_bt_workqueue);
 	memset(&xmit_buffers, 0 , sizeof(xmit_buffers));
 	return;
 }
@@ -364,6 +363,7 @@ static void img_bt_pltfr_dtsetup_rollback(void)
 
 static int img_bt_pltfr_bufsetup(void)
 {
+	ioaddr_t tx_base, rx_base;
 	int result = 0;
 
 	if (NULL == request_mem_region(xmit_buffers.phys_base,
@@ -390,16 +390,21 @@ static int img_bt_pltfr_bufsetup(void)
 	/*
 	 * TODO: this assumes contiguous placement
 	 */
-	xmit_buffers.tx.base =
-		(ioaddr_t)((resource_size_t)xmit_buffers.virt_base +
-			buffer_length);
-	xmit_buffers.rx.base =
-		(ioaddr_t)((resource_size_t)xmit_buffers.virt_base + 0);
-	dbg("tx buffer at : 0x%p\n", xmit_buffers.tx.base);
-	dbg("rx buffer at : 0x%p\n", xmit_buffers.rx.base);
-	xmit_buffers.tx.head = xmit_buffers.tx.tail = 0;
-	xmit_buffers.rx.head = xmit_buffers.rx.tail = 0;
-	xmit_buffers.tx.size = xmit_buffers.rx.size = buffer_length;
+	rx_base = (ioaddr_t)((resource_size_t)xmit_buffers.virt_base + 0);
+	tx_base = (ioaddr_t)((resource_size_t)xmit_buffers.virt_base +
+								buffer_length);
+	dbgn("tx buffer at : 0x%p", tx_base);
+	dbgn("rx buffer at : 0x%p", rx_base);
+	if (circ_buf_out_init(&xmit_buffers.tx, tx_base, buffer_length)) {
+		errn("<out> circular buffer init failed, size is not "
+					"a power of 2: %d", buffer_length);
+		goto buffer_alloc_failed;
+	}
+	if (circ_buf_in_init(&xmit_buffers.rx, rx_base, buffer_length)) {
+		errn("<in> circular buffer init failed, size is not "
+					"a power of 2: %d", buffer_length);
+		goto buffer_alloc_failed;
+	}
 
 	result = work_depot_init();
 	if (result) {
@@ -410,6 +415,8 @@ static int img_bt_pltfr_bufsetup(void)
 	return result;
 
 work_depot_init_failed:
+	(void)0;
+buffer_alloc_failed:
 	(void)0;
 remap_failed:
 	release_mem_region(xmit_buffers.phys_base, xmit_buffers.length);
@@ -485,6 +492,7 @@ memsetup_failed:
 static int img_bt_pltfr_remove(struct platform_device *pdev)
 {
 	gateway_exit();
+	destroy_workqueue(img_bt_workqueue);
 	img_bt_pltfr_reg_handler_rollback(0);
 	img_bt_pltfr_bufsetup_rollback();
 	img_bt_pltfr_dtsetup_rollback();
