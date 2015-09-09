@@ -35,6 +35,7 @@
 #include <linux/tty_flip.h>
 
 #include "circ-buf-ext.h"
+#include "etrace.h"
 #include "gateway.h"
 #include "payload.h"
 
@@ -81,8 +82,8 @@ static void img_bt_set_mctrl(struct uart_port *port, unsigned int mctrl) {}
 static unsigned int img_bt_get_mctrl(struct uart_port *port) { return 0; }
 static void img_bt_break_ctl(struct uart_port *port, int break_state) {}
 static void img_bt_enable_ms(struct uart_port *port) {}
-static void img_bt_release_port(struct uart_port *port) {}
-static int img_bt_request_port(struct uart_port *port) { return 0; }
+static void img_bt_release_port(struct uart_port *port) {trace_tty_release_port(0);}
+static int img_bt_request_port(struct uart_port *port) { trace_tty_request_port(0);return 0; }
 static void img_bt_config_port(struct uart_port *port, int flags) {}
 static int img_bt_verify_port(struct uart_port *port,
 		struct serial_struct *ser) { return 0; }
@@ -96,9 +97,7 @@ static const char *img_bt_type(struct uart_port *port)
 
 static void img_bt_stop_rx(struct uart_port *port)
 {
-	/*
-	 * TODO: implement
-	 */
+	trace_tty_stop_rx_requested(0);
 }
 
 static void img_bt_start_tx(struct uart_port *port)
@@ -117,6 +116,8 @@ static void img_bt_start_tx(struct uart_port *port)
 	 * to serial_core. TODO: find another way.
 	 */
 	struct circ_buf *xmit = &port->state->xmit;
+
+	trace_tty_start_tx(CIRC_CNT(xmit->head, xmit->tail, UART_XMIT_SIZE));
 
 	if (uart_circ_empty(xmit))
 		return;
@@ -137,23 +138,17 @@ static void img_bt_start_tx(struct uart_port *port)
 
 static void img_bt_stop_tx(struct uart_port *port)
 {
-	/*
-	 * TODO: implement
-	 */
+	trace_tty_stop_tx(0);
 }
 
 static void img_bt_shutdown(struct uart_port *port)
 {
-	/*
-	 * TODO: implement
-	 */
+	trace_tty_shutdown_port(0);
 }
 
 static int img_bt_startup(struct uart_port *port)
 {
-	/*
-	 * TODO: implement
-	 */
+	trace_tty_startup_port(0);
 	return 0;
 }
 
@@ -218,6 +213,7 @@ void gateway_exit(void)
 
 int gateway_send(struct payload *pld)
 {
+	trace_tty_flip_depleted(tty_buffer_space_avail(&gateway.port.state->port));
 	tty_insert_flip_string(&gateway.port.state->port,
 		payload_raw(pld),
 		payload_length(pld));
