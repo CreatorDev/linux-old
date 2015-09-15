@@ -196,6 +196,8 @@ static int img_connectivity_boot(struct platform_device *d)
 {
 	int err, t_idx;
 
+	soc_set_uccp_extram_base(module->uccp_sbus_v, module->scratch_bus);
+
 	if (BOOT_OFF == boot) {
 		mod_info("skipping boot");
 		return 0;
@@ -207,7 +209,6 @@ static int img_connectivity_boot(struct platform_device *d)
 
 	fwldr_init(module->uccp_sbus_v, module->uccp_gram_v, NULL);
 
-	soc_set_uccp_extram_base(module->uccp_sbus_v, module->scratch_bus);
 	/*
 	 * MCP code, if provided, has to be loaded first. After that it is
 	 * necessary to stop all META threads.
