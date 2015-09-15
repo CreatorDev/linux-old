@@ -24,6 +24,8 @@
 #include <sound/jack.h>
 #include <sound/soc.h>
 
+#include "../codecs/tpa6130a2.h"
+
 #include <dt-bindings/sound/pistachio-audio.h>
 
 #include "pistachio-event-timer.h"
@@ -44,6 +46,8 @@
 #define	PISTACHIO_DAC_MCLK_MAX_FREQ	200000000
 
 #define	PISTACHIO_INTERNAL_DAC_PREFIX	"internal-dac"
+
+#define	PISTACHIO_TPA6130A2_PREFIX	"tpa"
 
 #define PISTACHIO_I2S_LOOPBACK_REG		0x88
 #define PISTACHIO_I2S_LOOPBACK_CLK_MASK		0x3
@@ -67,7 +71,7 @@ struct pistachio_output {
 
 struct pistachio_parallel_out {
 	struct pistachio_output output;
-	struct snd_soc_dai_link_component internal_dac;
+	struct snd_soc_dai_link_component components[2];
 };
 
 struct pistachio_mclk {
@@ -156,6 +160,7 @@ struct pistachio_card {
 	struct notifier_block i2s_clk_notifier;
 	struct snd_ctl_elem_id *sample_rate_ids[PISTACHIO_EVT_MAX_SOURCES];
 	struct snd_ctl_elem_id *phase_difference_id;
+	struct snd_soc_dai_link_component *tpa6130a2;
 };
 
 static void pistachio_card_set_mclk_codecs(struct pistachio_i2s *i2s,
@@ -559,6 +564,17 @@ static int pistachio_card_i2s_link_init(struct pistachio_i2s *i2s,
 	return 0;
 }
 
+static int pistachio_card_prl_out_link_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct pistachio_card *pbc = snd_soc_card_get_drvdata(rtd->card);
+	int ret = 0;
+
+	if (pbc->tpa6130a2)
+		ret = tpa6130a2_stereo_enable(rtd->codec_dais[1]->codec, 1);
+
+	return ret;
+}
+
 static void pistachio_card_parallel_out_shutdown(struct snd_pcm_substream *st)
 {
 	struct snd_soc_pcm_runtime *rtd = st->private_data;
@@ -884,7 +900,8 @@ static int pistachio_card_parse_of_parallel_out(struct device_node *node,
 
 	link->cpu_of_node = np;
 	link->platform_of_node = np;
-	link->codecs = &pbc->parallel_out->internal_dac;
+	link->codecs = pbc->parallel_out->components;
+
 	np = of_parse_phandle(node, "sound-dai", 0);
 	if (!np)
 		return -EINVAL;
@@ -894,6 +911,15 @@ static int pistachio_card_parse_of_parallel_out(struct device_node *node,
 	if (ret)
 		return ret;
 
+	np = of_parse_phandle(node, "tpa6130a2", 0);
+	if (np) {
+		link->codecs[1].of_node = np;
+		link->codecs[1].dai_name = "tpa6130a2";
+		link->num_codecs++;
+		pbc->tpa6130a2 = &link->codecs[1];
+	}
+
+	link->init = pistachio_card_prl_out_link_init;
 	link->ops = &pistachio_card_parallel_out_ops;
 
 	return 0;
@@ -1277,7 +1303,7 @@ static int pistachio_card_parse_of_confs(struct pistachio_card *pbc,
 
 	n = codec_info->unique_codecs;
 	if (parallel_out)
-		n++;
+		n += pbc->tpa6130a2 ? 2 : 1;
 	codecs = codec_info->codecs;
 
 	size = sizeof(*pbc->card.codec_conf) * n;
@@ -1301,6 +1327,11 @@ static int pistachio_card_parse_of_confs(struct pistachio_card *pbc,
 	if (parallel_out) {
 		conf->of_node = parallel_out->codecs[0].of_node;
 		conf->name_prefix = PISTACHIO_INTERNAL_DAC_PREFIX;
+		conf++;
+		if (pbc->tpa6130a2) {
+			conf->of_node = parallel_out->codecs[1].of_node;
+			conf->name_prefix = PISTACHIO_TPA6130A2_PREFIX;
+		}
 	}
 
 	pbc->card.num_configs = n;
@@ -2190,9 +2221,18 @@ static void pistachio_card_info(struct pistachio_card *pbc)
 		dev_dbg(dev, "\n");
 		dev_dbg(dev, "    CODECS\n");
 		conf = &pbc->card.codec_conf[pbc->card.num_configs - 1];
+		if (pbc->tpa6130a2)
+			conf--;
 		dev_dbg(dev, "        %s (%s) (%s)\n", conf->name_prefix,
 			conf->of_node->name,
-			pbc->parallel_out->internal_dac.dai_name);
+			pbc->parallel_out->components[0].dai_name);
+		if (pbc->tpa6130a2) {
+			conf++;
+			dev_dbg(dev, "        %s (%s) (%s)\n",
+				conf->name_prefix,
+				conf->of_node->name,
+				pbc->parallel_out->components[1].dai_name);
+		}
 		dev_dbg(dev, "\n");
 		link++;
 	}
