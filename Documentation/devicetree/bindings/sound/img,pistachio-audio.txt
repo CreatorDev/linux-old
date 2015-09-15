@@ -59,6 +59,10 @@ Required parallel-out subnode properties:
 
   - sound-dai : phandle of internal dac
 
+Optional parallel-out subnode properties:
+
+  - tpa6130a2 : phandle of the tpa6130a2 amplifier
+
 Required i2s-out subnode properties:
 
   - cpu-dai : phandle of i2s out cpu dai
@@ -79,7 +83,7 @@ Optional i2s-out subnodes:
   - <codec-name> : Contains codec information. <codec-name> will be used as
 		   the prefix for the codec. This name must be unique for
 		   each individual codec (unique codec device node), and
-		   cannot be equal to "internal-dac". The name
+		   cannot be equal to "internal-dac" or "tpa6130a2". The name
 		   should be short to avoid control name truncation
 
 Required i2s-in subnode properties:
@@ -102,7 +106,7 @@ Optional i2s-in subnodes:
   - <codec-name> : Contains codec information. <codec-name> will be used as
 		   the prefix for the codec. This name must be unique for
 		   each individual codec (unique codec device node), and
-		   cannot be equal to "internal-dac". The name
+		   cannot be equal to "internal-dac" or "tpa6130a2". The name
 		   should be short to avoid control name truncation
 
 Required <codec-name> subnode properties:
@@ -186,12 +190,14 @@ pistachio_audio_card {
 		      "Speaker", "Speakers",
 		      "Line", "RCA Out";
 
-	img,routing = "Headphones", "internal-dac AOUTL",
-		      "Headphones", "internal-dac AOUTR",
-		      "Speakers", "internal-dac AOUTL",
-		      "Speakers", "internal-dac AOUTR",
+	img,routing = "Headphones", "tpa OUTL",
+		      "Headphones", "tpa OUTR",
+		      "Speakers", "tpa OUTL",
+		      "Speakers", "tpa OUTR",
 		      "RCA Out", "internal-dac AOUTL",
-		      "RCA Out", "internal-dac AOUTR";
+		      "RCA Out", "internal-dac AOUTR",
+		      "tpa INL", "internal-dac AOUTL",
+		      "tpa INR", "internal-dac AOUTR";
 
 	spdif-out {
 		cpu-dai = <&spdif_out>;
@@ -204,6 +210,7 @@ pistachio_audio_card {
 	parallel-out {
 		cpu-dai = <&parallel_out>;
 		sound-dai = <&internal_dac>;
+		tpa6130a2 = <&tpa6130a2>;
 	};
 
 	i2s-out {
