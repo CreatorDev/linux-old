@@ -196,18 +196,19 @@ static int img_connectivity_boot(struct platform_device *d)
 {
 	int err, t_idx;
 
-	soc_set_uccp_extram_base(module->uccp_sbus_v, module->scratch_bus);
-
-	if (BOOT_OFF == boot) {
-		mod_info("skipping boot");
-		return 0;
-	}
-
 	err = remap_uccp_regions(&d->dev);
 	if (err)
 		return err;
 
 	fwldr_init(module->uccp_sbus_v, module->uccp_gram_v, NULL);
+
+	soc_set_uccp_extram_base(module->uccp_sbus_v, module->scratch_bus);
+
+	if (BOOT_OFF == boot) {
+		unmap_uccp_regions(&d->dev);
+		mod_info("skipping boot");
+		return 0;
+	}
 
 	/*
 	 * MCP code, if provided, has to be loaded first. After that it is
