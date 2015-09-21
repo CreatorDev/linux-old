@@ -374,6 +374,7 @@ static int dw8250_probe_of(struct uart_port *p,
 		data->msr_mask_off |= UART_MSR_TERI;
 	}
 
+	up->port.set_termios = dw8250_set_termios;
 	return 0;
 }
 
