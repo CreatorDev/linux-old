@@ -415,6 +415,7 @@ static int dw8250_probe(struct platform_device *pdev)
 		data->msr_mask_off |= UART_MSR_TERI;
 	}
 
+	p->set_termios = dw8250_set_termios;
 	/* Always ask for fixed clock rate from a property. */
 	device_property_read_u32(p->dev, "clock-frequency", &p->uartclk);
 
