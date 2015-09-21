@@ -384,10 +384,9 @@
 		clock-names = "baudclk", "apb_pclk";
 		assigned-clocks = <&clk_core CLK_UART0_INTERNAL_DIV>,
 				  <&clk_core CLK_UART0_DIV>;
-		assigned-clock-rates = <114278400>, <1843200>;
 		reg-shift = <2>;
 		reg-io-width = <4>;
-		pinctrl-0 = <&uart0_pins>;
+		pinctrl-0 = <&uart0_pins>, <&uart0_rts_cts_pins>;
 		pinctrl-names = "default";
 		status = "disabled";
 	};
