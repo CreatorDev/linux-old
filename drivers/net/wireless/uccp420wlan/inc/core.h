@@ -76,6 +76,9 @@ extern spinlock_t tsf_lock;
 #define CH_PROG_TIMEOUT 500   /* In milli-seconds*/
 #define CH_PROG_TIMEOUT_TICKS msecs_to_jiffies(CH_PROG_TIMEOUT)
 
+#define QUEUE_FLUSH_TIMEOUT  2000   /* Specify delay in milli-seconds*/
+#define QUEUE_FLUSH_TIMEOUT_TICKS   msecs_to_jiffies(QUEUE_FLUSH_TIMEOUT)
+
 #ifdef CONFIG_PM
 #define PS_ECON_CFG_TIMEOUT 1000
 #define PS_ECON_CFG_TIMEOUT_TICKS msecs_to_jiffies(PS_ECON_CFG_TIMEOUT)
@@ -107,6 +110,10 @@ extern spinlock_t tsf_lock;
 #define CLOCK_MASK 0x3FFFFFFF
 #define TICK_NUMRATOR 12288 /* 12288 KHz  */
 #define TICK_DENOMINATOR 1000 /* 1000 KHz */
+
+#define BTS_AP_24GHZ_ETS 195 /* Microsecs */
+#define BTS_AP_5GHZ_ETS 25 /* Microsecs */
+
 
 enum noa_triggers {
 	FROM_TX = 0,
@@ -381,6 +388,11 @@ struct tx_pkt_info {
 	struct sk_buff_head pkt;
 	unsigned int hdr_len;
 	unsigned int queue;
+	unsigned int rate[4];
+	unsigned int retries[4];
+	unsigned int curr_retries;
+	unsigned int max_retries;
+	bool adjusted_rates;
 };
 
 
@@ -450,11 +462,11 @@ struct econ_ps_cfg_status {
 #endif
 
 struct current_channel {
-	unsigned int pri_chnl_num;
-	unsigned int chnl_num1;
-	unsigned int chnl_num2;
+	unsigned int center_freq1;
+	unsigned int center_freq2;
 	unsigned int freq_band;
 	unsigned int ch_width;
+	unsigned int pri_chnl_num;
 };
 
 struct roc_params {
@@ -557,6 +569,7 @@ struct umac_vif {
 
 struct umac_sta {
 	int index;
+	int vif_index;
 #ifdef MULTI_CHAN_SUPPORT
 	struct umac_chanctx *chanctx;
 #endif
@@ -605,7 +618,8 @@ extern int __uccp420wlan_tx_frame(struct mac80211_dev *dev,
 #ifdef MULTI_CHAN_SUPPORT
 				  int curr_chanctx_idx,
 #endif
-				  unsigned int more_frames);
+				  unsigned int more_frames,
+				  bool retry);
 extern void uccp420wlan_tx_init(struct mac80211_dev *dev);
 extern void uccp420wlan_tx_deinit(struct mac80211_dev *dev);
 

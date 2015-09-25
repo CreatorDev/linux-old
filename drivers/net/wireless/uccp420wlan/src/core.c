@@ -259,9 +259,6 @@ static void vif_bcn_timer_expiry(unsigned long data)
 	struct sk_buff *skb, *temp;
 	struct sk_buff_head bcast_frames;
 	unsigned long flags;
-#ifdef MULTI_CHAN_SUPPORT
-	int curr_chanctx_idx = -1;
-#endif
 
 	if (uvif->vif->bss_conf.enable_beacon == false)
 		return;
@@ -296,20 +293,22 @@ static void vif_bcn_timer_expiry(unsigned long data)
 
 		spin_lock_irqsave(&uvif->dev->bcast_lock, flags);
 
-#ifdef MULTI_CHAN_SUPPORT
-		spin_lock(&uvif->dev->chanctx_lock);
-		curr_chanctx_idx = uvif->dev->curr_chanctx_idx;
-		spin_unlock(&uvif->dev->chanctx_lock);
-#endif
-
-		while ((skb = skb_dequeue(&bcast_frames)))
+		while ((skb = skb_dequeue(&bcast_frames))) {
+			/* For a Beacon queue we will let the frames pass
+			 * through irrespective of the current channel context.
+			 * The FW will take care of transmitting them in the
+			 * appropriate channel. Hence pass the interfaces
+			 * channel context instead of the actual current channel
+			 * context.
+			 */
 			uccp420wlan_tx_frame(skb,
 					     NULL,
 					     uvif->dev,
 #ifdef MULTI_CHAN_SUPPORT
-					     curr_chanctx_idx,
+					     uvif->chanctx->index,
 #endif
 					     true);
+		}
 
 		spin_unlock_irqrestore(&uvif->dev->bcast_lock, flags);
 
@@ -319,16 +318,17 @@ static void vif_bcn_timer_expiry(unsigned long data)
 		if (!skb)
 			goto reschedule_timer;
 
-#ifdef MULTI_CHAN_SUPPORT
-		spin_lock_bh(&uvif->dev->chanctx_lock);
-		curr_chanctx_idx = uvif->dev->curr_chanctx_idx;
-		spin_unlock_bh(&uvif->dev->chanctx_lock);
-#endif
+		/* For a Beacon queue we will let the frames pass through
+		 * irrespective of the current channel context. The FW will take
+		 * care of transmitting them in the appropriate channel.  Hence
+		 * pass the interfaces channel context instead of the actual
+		 * current channel context.
+		 */
 		uccp420wlan_tx_frame(skb,
 				     NULL,
 				     uvif->dev,
 #ifdef MULTI_CHAN_SUPPORT
-				     curr_chanctx_idx,
+				     uvif->chanctx->index,
 #endif
 				     true);
 
@@ -1093,7 +1093,9 @@ void uccp420wlan_proc_ch_sw_event(struct umac_event_ch_switch *ch_sw_info,
 	rcu_read_unlock();
 
 	if (i == MAX_CHANCTX) {
-		pr_err("%s: Invalid Channel Context\n", __func__);
+		pr_err("%s: Invalid Channel Context: chan: %d\n",
+		       __func__,
+		       chan);
 		return;
 	}
 
@@ -1179,6 +1181,7 @@ void uccp420wlan_proc_ch_sw_event(struct umac_event_ch_switch *ch_sw_info,
 					     queue,
 					     i,
 					     chan_id,
+					     0,
 					     0); /* TODO: Currently sending 0
 						    since this param is not used
 						    as expected in the orig
@@ -1398,10 +1401,11 @@ void uccp420wlan_rx_frame(struct sk_buff *skb, void *context)
 				memcpy(&ldelta, &rx->reserved[12], 4);
 				dev->params->sync[i].atu = 0;
 				/* ts2 = get_real_ts2(ts2, ldelta); */
-				if (frc_to_atu)
+				if (frc_to_atu) {
 					frc_to_atu(ts2,
 						&dev->params->sync[i].atu, 0);
 				dev->params->sync[i].atu -= ldelta * 1000;
+				}
 				spin_unlock(&tsf_lock);
 				break;
 			}

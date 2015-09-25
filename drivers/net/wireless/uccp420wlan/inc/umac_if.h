@@ -86,7 +86,8 @@ extern int uccp420wlan_prog_tx(unsigned int queue,
 #ifdef MULTI_CHAN_SUPPORT
 			       int curr_chanctx_idx,
 #endif
-			       unsigned int tokenid);
+			       unsigned int tokenid,
+			       bool retry);
 
 extern int uccp420wlan_sta_add(int index,
 			       struct peer_sta_info *sta);
@@ -193,8 +194,8 @@ extern int uccp420wlan_prog_txq_params(int index,
 				       unsigned int uapsd);
 
 extern int uccp420wlan_prog_channel(unsigned int prim_ch,
-				    unsigned int ch_no1,
-				    unsigned int ch_no2,
+				    unsigned int center_freq1,
+				    unsigned int center_freq2,
 				    unsigned int ch_width,
 #ifdef MULTI_CHAN_SUPPORT
 				    unsigned int vif_index,

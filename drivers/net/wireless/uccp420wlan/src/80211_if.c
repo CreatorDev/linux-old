@@ -488,17 +488,12 @@ static int config(struct ieee80211_hw *hw,
 	struct mac80211_dev *dev = hw->priv;
 	struct ieee80211_conf *conf = &hw->conf;
 	unsigned int pri_chnl_num;
-	unsigned int chnl_num1;
-	unsigned int chnl_num2;
 	unsigned int freq_band;
 	unsigned int ch_width;
-	int center_freq = 0;
-	int center_freq1 = 0;
+	unsigned int center_freq = 0;
+	unsigned int center_freq1 = 0;
+	unsigned int center_freq2 = 0;
 	int i;
-	int cf_offset;
-	int is_vht_bw80;
-	int is_vht_bw80_sec_40minus;
-	int is_vht_bw80_sec_40plus;
 
 	DEBUG_LOG("%s-80211IF:In config\n", dev->name);
 
@@ -513,75 +508,18 @@ static int config(struct ieee80211_hw *hw,
 	if (changed & IEEE80211_CONF_CHANGE_CHANNEL) {
 		center_freq = conf->chandef.chan->center_freq;
 		center_freq1 = conf->chandef.center_freq1;
-		cf_offset = center_freq1;
-
-		pri_chnl_num = ieee80211_frequency_to_channel(center_freq);
+		center_freq2 = conf->chandef.center_freq2;
 		freq_band = conf->chandef.chan->band;
-
 		ch_width = conf->chandef.width;
 
+		pri_chnl_num = ieee80211_frequency_to_channel(center_freq);
 		DEBUG_LOG("%s-80211IF:Primary Channel is %d\n",
 			       dev->name,
 			       pri_chnl_num);
 
-		if (wifi->params.production_test == 1) {
-
-			if ((wifi->params.prod_mode_chnl_bw_40_mhz == 1) &&
-			    (wifi->params.sec_ch_offset_40_minus == 1)) {
-				/*  NL80211_CHAN_HT40MINUS */
-				ch_width = 2;
-				cf_offset = center_freq - 10;
-			} else if (wifi->params.prod_mode_chnl_bw_40_mhz == 1) {
-				/* NL80211_CHAN_HT40PLUS */
-				ch_width = 2;
-				cf_offset = center_freq + 10;
-			}
-
-			is_vht_bw80 = vht_support &&
-				(wifi->params.prod_mode_chnl_bw_80_mhz == 1);
-
-			is_vht_bw80_sec_40minus = is_vht_bw80 &&
-				(wifi->params.sec_ch_offset_40_minus == 1);
-
-			is_vht_bw80_sec_40plus = is_vht_bw80 &&
-				(wifi->params.sec_ch_offset_40_plus == 1);
-
-			if (is_vht_bw80)
-				ch_width = 3;
-
-			if (is_vht_bw80_sec_40minus &&
-			    (wifi->params.sec_40_ch_offset_80_minus == 1))
-				cf_offset = center_freq - 30;
-			else if (is_vht_bw80_sec_40minus &&
-				 (wifi->params.sec_40_ch_offset_80_plus == 1))
-				cf_offset = center_freq + 10;
-			else if (is_vht_bw80_sec_40minus)/* default */
-				cf_offset = center_freq - 30;
-
-			if (is_vht_bw80_sec_40plus &&
-			    (wifi->params.sec_40_ch_offset_80_minus == 1))
-				cf_offset = center_freq - 10;
-			else if (is_vht_bw80_sec_40plus &&
-				 (wifi->params.sec_40_ch_offset_80_plus == 1))
-				cf_offset = center_freq + 30;
-			else if (is_vht_bw80_sec_40plus)/* default */
-				cf_offset = center_freq - 10;
-		}
-
-		chnl_num1 = ieee80211_frequency_to_channel(cf_offset);
-		chnl_num2 = 0;
-
-		/*Store the currrent Channel*/
-		dev->cur_chan.pri_chnl_num = pri_chnl_num;
-		dev->cur_chan.chnl_num1 = chnl_num1;
-		dev->cur_chan.chnl_num2 = chnl_num2;
-		dev->cur_chan.ch_width  = ch_width;
-		dev->cur_chan.freq_band = freq_band;
-
 		dev->chan_prog_done = 0;
 		uccp420wlan_prog_channel(pri_chnl_num,
-					 chnl_num1,
-					 chnl_num2,
+					 center_freq1, center_freq2,
 					 ch_width,
 #ifdef MULTI_CHAN_SUPPORT
 					 0,
@@ -1372,8 +1310,8 @@ static void uccp420_roc_complete_work(struct work_struct *work)
 		dev->chan_prog_done = 0;
 
 		uccp420wlan_prog_channel(dev->cur_chan.pri_chnl_num,
-					 dev->cur_chan.chnl_num1,
-					 dev->cur_chan.chnl_num2,
+					 dev->cur_chan.center_freq1,
+					 dev->cur_chan.center_freq2,
 					 dev->cur_chan.ch_width,
 #ifdef MULTI_CHAN_SUPPORT
 					 0,
@@ -1421,7 +1359,6 @@ static int remain_on_channel(struct ieee80211_hw *hw,
 	struct mac80211_dev *dev = (struct mac80211_dev *)hw->priv;
 	unsigned int pri_chnl_num = 0;
 	unsigned int chnl_num1 = 0;
-	unsigned int chnl_num2 = 0;
 	unsigned int freq_band = channel->band;
 	unsigned int ch_width = 0; /* 20MHz */
 #ifdef MULTI_CHAN_SUPPORT
@@ -1467,9 +1404,9 @@ static int remain_on_channel(struct ieee80211_hw *hw,
 
 		dev->chan_prog_done = 0;
 
-		uccp420wlan_prog_channel(pri_chnl_num,
-					 chnl_num1,
-					 chnl_num2,
+		uccp420wlan_prog_channel(dev->cur_chan.pri_chnl_num,
+					channel->center_freq,
+					 0,
 					 ch_width,
 #ifdef MULTI_CHAN_SUPPORT
 					 uvif->vif_index,
@@ -1928,6 +1865,7 @@ int sta_add(struct ieee80211_hw *hw,
 		usta->index = peer_id;
 #ifdef MULTI_CHAN_SUPPORT
 		usta->chanctx = uvif->chanctx;
+		usta->vif_index = uvif->vif_index;
 #endif
 	}
 
@@ -2003,26 +1941,21 @@ static void umac_chanctx_set_channel(struct mac80211_dev *dev,
 				     struct umac_vif *uvif,
 				     struct cfg80211_chan_def *chandef)
 {
-	unsigned int pri_chan = 0;
-	unsigned int chan1 = 0;
-	unsigned int chan2 = 0;
 	unsigned int freq_band = 0;
 	unsigned int ch_width = 0;
-	int center_freq = 0;
 	int center_freq1 = 0;
+	int center_freq2 = 0;
+	unsigned int pri_chan;
 
-	center_freq = chandef->chan->center_freq;
+	pri_chan = ieee80211_frequency_to_channel(chandef->chan->center_freq);
 	center_freq1 = chandef->center_freq1;
-
-	pri_chan = ieee80211_frequency_to_channel(center_freq);
-	chan1 = ieee80211_frequency_to_channel(center_freq1);
+	center_freq2 = chandef->center_freq2;
 
 	freq_band = chandef->chan->band;
 	ch_width = chandef->width;
 
-	uccp420wlan_prog_channel(pri_chan,
-				 chan1,
-				 chan2,
+	uccp420wlan_prog_channel(pri_chan, center_freq1,
+				 center_freq2,
 				 ch_width,
 				 uvif->vif_index,
 				 freq_band);
@@ -2211,6 +2144,115 @@ static void unassign_vif_chanctx(struct ieee80211_hw *hw,
 
 	mutex_unlock(&dev->mutex);
 }
+
+
+static void flush_queues(struct ieee80211_hw *hw,
+			 struct ieee80211_vif *vif,
+			 u32 queues,
+			 bool drop)
+{
+	struct mac80211_dev *dev = NULL;
+	struct umac_vif *uvif = NULL;
+	struct umac_chanctx *ctx = NULL;
+	unsigned int chan_ctx_id = 0;
+	unsigned int queue = 0;
+	unsigned int pending = 0;
+	int count = 0;
+	int peer_id = -1;
+	int i = 0;
+	unsigned long flags = 0;
+	struct sk_buff_head *pend_pkt_q = NULL;
+	struct tx_config *tx = NULL;
+	struct ieee80211_sta *sta = NULL;
+	struct umac_sta *usta = NULL;
+
+	dev = hw->priv;
+
+	mutex_lock(&dev->mutex);
+
+	tx = &dev->tx;
+
+	if (!vif)
+		goto out;
+
+	uvif = (struct umac_vif *)vif->drv_priv;
+
+	if (!uvif->chanctx)
+		goto out;
+
+	if (dev->num_active_chanctx != 2) {
+		DEBUG_LOG("%s-80211IF: Flush is only supported for TSMC case\n",
+			  __func__);
+		goto out;
+	}
+
+	ctx = uvif->chanctx;
+	chan_ctx_id = ctx->index;
+
+	for (queue = 0; queue < WLAN_AC_MAX_CNT; queue++) {
+		if (!((1 << queue) & queues))
+			continue;
+
+check_tokens_flush_complete:
+	pending = 0;
+
+	spin_lock_irqsave(&tx->lock, flags);
+	rcu_read_lock();
+
+	for (i = 0; i < MAX_PEND_Q_PER_AC; i++) {
+		if (i < MAX_PEERS) {
+			sta = rcu_dereference(dev->peers[i]);
+
+			if (!sta)
+				continue;
+
+			usta = (struct umac_sta *)(sta->drv_priv);
+
+			if (usta->vif_index == uvif->vif_index)
+				peer_id = i;
+			else
+				continue;
+		} else if (i == uvif->vif_index) {
+			peer_id = uvif->vif_index;
+		} else
+			continue;
+
+		pend_pkt_q = &tx->pending_pkt[peer_id][queue];
+
+		/* Assuming all packets for the peer have same channel
+		 * context
+		 */
+		pending = skb_queue_len(pend_pkt_q);
+	}
+
+	rcu_read_unlock();
+	spin_unlock_irqrestore(&tx->lock, flags);
+
+	if (pending && (count < QUEUE_FLUSH_TIMEOUT_TICKS)) {
+		current->state = TASK_INTERRUPTIBLE;
+
+		if (0 == schedule_timeout(1))
+			count++;
+
+		goto check_tokens_flush_complete;
+	}
+
+	if (pending)
+		DEBUG_LOG("%s: failed for VIF: %d and Queue: %d, pending: %d\n",
+				__func__,
+				uvif->vif_index,
+				queue,
+				pending);
+	else
+		DEBUG_LOG("%s: Flush for VIF: %d and Queue: %d success\n",
+				__func__,
+				uvif->vif_index,
+				queue);
+	}
+
+out:
+	mutex_unlock(&dev->mutex);
+}
 #endif
 
 
@@ -2253,6 +2295,7 @@ static struct ieee80211_ops ops = {
 	.change_chanctx           = change_chanctx,
 	.assign_vif_chanctx       = assign_vif_chanctx,
 	.unassign_vif_chanctx     = unassign_vif_chanctx,
+	.flush			  = flush_queues,
 #endif
 };
 
@@ -2397,6 +2440,7 @@ static int proc_read_config(struct seq_file *m, void *v)
 	int cnt = 0;
 	int rf_params_size = sizeof(wifi->params.rf_params) /
 			     sizeof(wifi->params.rf_params[0]);
+	struct mac80211_dev *dev = ((struct mac80211_dev *)(wifi->hw->priv));
 
 	seq_puts(m, "************* Configurable Parameters ***********\n");
 	seq_printf(m, "dot11g_support = %d\n", wifi->params.dot11g_support);
@@ -2576,6 +2620,9 @@ static int proc_read_config(struct seq_file *m, void *v)
 		seq_printf(m, "set_tx_power = %d dB\n",
 			   wifi->params.set_tx_power);
 
+	seq_printf(m, "center_frequency = %d\n",
+		   ieee80211_frequency_to_channel(dev->cur_chan.center_freq1));
+
 	if (ftm)
 		seq_printf(m, "aux_adc_chain_id = %d\n",
 			   wifi->params.aux_adc_chain_id);
@@ -2747,6 +2794,7 @@ static int proc_read_mac_stats(struct seq_file *m, void *v)
 	unsigned int total_value = 0;
 	int total_rssi_samples = 0;
 	int total_rssi_value = 0;
+	struct mac80211_dev *dev = NULL;
 
 	if (ftm) {
 		for (index = 0; index < MAX_AUX_ADC_SAMPLES; index++) {
@@ -2850,6 +2898,10 @@ static int proc_read_mac_stats(struct seq_file *m, void *v)
 		   wifi->stats.tx_cmd_send_count_multi);
 	seq_printf(m, "tx_done_recv_count = %d\n",
 		   wifi->stats.tx_done_recv_count);
+
+	dev = (struct mac80211_dev *)(wifi->hw->priv);
+	seq_printf(m, "tx_buff_pool_map = %ld\n",
+		   dev->tx.buf_pool_bmp[0]);
 	if (ftm)
 		seq_printf(m, "pdout_val = %d (total samples: %d)\n",
 			   total_samples ? (total_value/total_samples) : 0,
@@ -3658,15 +3710,8 @@ static ssize_t proc_write_config(struct file *file,
 	} else if ((wifi->params.production_test) &&
 		    param_get_val(buf, "start_prod_mode=", &val)) {
 			unsigned int pri_chnl_num = 0;
-			unsigned int chnl_num1 = 0;
-			unsigned int chnl_num2 = 0;
 			unsigned int freq_band = IEEE80211_BAND_5GHZ;
-			unsigned int ch_width = 0;
 			int center_freq = 0;
-			int cf_offset = 0;
-			int is_vht_bw80 = 0;
-			int is_vht_bw80_sec_40minus = 0;
-			int is_vht_bw80_sec_40plus = 0;
 			struct mac80211_dev *dev = wifi->hw->priv;
 
 			pri_chnl_num = val;
@@ -3681,51 +3726,6 @@ static ssize_t proc_write_config(struct file *file,
 			center_freq =
 			ieee80211_channel_to_frequency(pri_chnl_num,
 						       freq_band);
-			cf_offset = center_freq;
-
-			if ((wifi->params.prod_mode_chnl_bw_40_mhz == 1) &&
-			    (wifi->params.sec_ch_offset_40_minus == 1)) {
-				/*  NL80211_CHAN_HT40MINUS */
-				ch_width = 2;
-				cf_offset = center_freq - 10;
-			} else if (wifi->params.prod_mode_chnl_bw_40_mhz == 1) {
-				/* NL80211_CHAN_HT40PLUS */
-				ch_width = 2;
-				cf_offset = center_freq + 10;
-			}
-
-			is_vht_bw80 = vht_support &&
-				(wifi->params.prod_mode_chnl_bw_80_mhz == 1);
-
-			is_vht_bw80_sec_40minus = is_vht_bw80 &&
-				(wifi->params.sec_ch_offset_40_minus == 1);
-
-			is_vht_bw80_sec_40plus = is_vht_bw80 &&
-				(wifi->params.sec_ch_offset_40_plus == 1);
-
-			if (is_vht_bw80)
-				ch_width = 3;
-
-			if (is_vht_bw80_sec_40minus &&
-			    (wifi->params.sec_40_ch_offset_80_minus == 1))
-				cf_offset = center_freq - 30;
-			else if (is_vht_bw80_sec_40minus &&
-				 (wifi->params.sec_40_ch_offset_80_plus == 1))
-				cf_offset = center_freq + 10;
-			else if (is_vht_bw80_sec_40minus)/* default */
-				cf_offset = center_freq - 30;
-
-			if (is_vht_bw80_sec_40plus &&
-			    (wifi->params.sec_40_ch_offset_80_minus == 1))
-				cf_offset = center_freq - 10;
-			else if (is_vht_bw80_sec_40plus &&
-				 (wifi->params.sec_40_ch_offset_80_plus == 1))
-				cf_offset = center_freq + 30;
-			else if (is_vht_bw80_sec_40plus)/* default */
-				cf_offset = center_freq - 10;
-
-			chnl_num1 = ieee80211_frequency_to_channel(cf_offset);
-			chnl_num2 = 0;
 
 			if ((wifi->params.fw_loading == 1) &&
 			     load_fw(dev->hw)) {
@@ -3743,8 +3743,10 @@ static ssize_t proc_write_config(struct file *file,
 						val);
 
 				uccp420wlan_prog_channel(pri_chnl_num,
-							 chnl_num1,
-							 chnl_num2, ch_width,
+							center_freq,
+							 0,
+							 0,
+					/*It will be overwritten anyway*/
 #ifdef MULTI_CHAN_SUPPORT
 							 0,
 #endif
