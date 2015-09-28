@@ -15,7 +15,7 @@ config IMG_EFUSE
 
 config IMG_CONNECTIVITY
 	tristate "Imagination Technologies UCCP base driver"
-	depends on HAS_IOMEM
+	depends on HAS_IOMEM && CMA
 	default m
 	help
 	  Imagination Technologies UCCP driver which loads the firmware
