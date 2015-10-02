@@ -496,6 +496,9 @@ static void img_spfi_config(struct spi_master *master, struct spi_device *spi,
 	struct img_spfi *spfi = spi_master_get_devdata(spi->master);
 	u32 val, div;
 
+	/* Start the transaction from a known (reset) state */
+	spfi_reset(spfi);
+
 	/*
 	 * output = spfi_clk * (BITCLK / 512), where BITCLK must be a
 	 * power of 2 up to 128
