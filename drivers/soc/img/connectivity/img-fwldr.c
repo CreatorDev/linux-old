@@ -1190,7 +1190,7 @@ static int fwldr_wait_for_completion(void)
 	while (!check_exec_signature(UCCP_THRD_EXEC_SIG) && i++ < 1000)
 		mdelay(10);
 
-	if (i == 1000)
+	if (i == 1001)
 		result = 0;
 
 	return result;
