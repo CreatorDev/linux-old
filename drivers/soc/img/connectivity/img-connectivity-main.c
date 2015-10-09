@@ -170,7 +170,7 @@ static int boot_cpu(struct device *d, const char *fw_name,
 		mod_err("firmware %s load failed", fw_name);
 
 	release_firmware(fw);
-	return 0;
+	return err;
 }
 
 static int remap_uccp_regions(struct device *d)
