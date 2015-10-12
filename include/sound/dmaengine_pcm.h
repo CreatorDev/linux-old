@@ -145,11 +145,17 @@ struct snd_dmaengine_pcm_config {
 int snd_dmaengine_pcm_register(struct device *dev,
 	const struct snd_dmaengine_pcm_config *config,
 	unsigned int flags);
+int snd_dmaengine_pcm_register_id_name(struct device *dev,
+	const struct snd_dmaengine_pcm_config *config, unsigned int flags,
+	unsigned int id, char *platform_name);
 void snd_dmaengine_pcm_unregister(struct device *dev);
 
 int devm_snd_dmaengine_pcm_register(struct device *dev,
 	const struct snd_dmaengine_pcm_config *config,
 	unsigned int flags);
+int devm_snd_dmaengine_pcm_register_id_name(struct device *dev,
+	const struct snd_dmaengine_pcm_config *config, unsigned int flags,
+	unsigned int id, char *platform_name);
 
 int snd_dmaengine_pcm_prepare_slave_config(struct snd_pcm_substream *substream,
 	struct snd_pcm_hw_params *params,
