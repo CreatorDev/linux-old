@@ -45,6 +45,8 @@ Optional subnodes:
 
   - i2s-in : Contains i2s in information
 
+  - i2s-in-alt : Contains i2s in (alternate interface) information
+
 Required spdif-out subnode properties:
 
   - cpu-dai : phandle of spdif out cpu dai
@@ -86,14 +88,14 @@ Optional i2s-out subnodes:
 		   cannot be equal to "internal-dac" or "tpa6130a2". The name
 		   should be short to avoid control name truncation
 
-Required i2s-in subnode properties:
+Required i2s-in, i2s-in-alt subnode properties:
 
-  - cpu-dai : phandle of i2s in cpu dai
+  - cpu-dais : array of phandles of i2s in cpu dais
 
   - format : i2s in format. "i2s" and "left_j" are supported by
 	     the Pistachio iteration of the i2s in controller
 
-Optional i2s-in subnode properties:
+Optional i2s-in, i2s-in-alt subnode properties:
 
   - bitclock-inversion : i2s out BCLK inversion
 
@@ -101,7 +103,7 @@ Optional i2s-in subnode properties:
 
   - continuous-clock : i2s out BCLK and LRCLK always active
 
-Optional i2s-in subnodes:
+Optional i2s-in, i2s-in-alt subnodes:
 
   - <codec-name> : Contains codec information. <codec-name> will be used as
 		   the prefix for the codec. This name must be unique for
