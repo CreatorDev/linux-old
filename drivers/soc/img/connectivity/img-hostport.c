@@ -179,7 +179,7 @@ static u8 id_to_field(int id)
 static void notify_common(u16 user_data, int user_id, gen_handler poke_ready,
 							void *poke_ready_arg)
 {
-	dbgn("snd -- %d:%d:%02X", user_id, user_id, user_data);
+	trace_printk("img-hostport: snd -- %d:%d:%02X\n", user_id, user_id, user_data);
 	if (poke_ready)
 		poke_ready(poke_ready_arg);
 	iowrite32(0x87 << 24 | user_data << 8 | id_to_field(user_id),
@@ -201,27 +201,28 @@ static irqreturn_t hal_irq_handler(int    irq, void  *p)
 	/* TODO: need to change that to support platforms other that 32 bit */
 	first_bit = (reg_value & (1 << 31)) >> 31;
 	if (0 == first_bit) {
-		err("unexpected spurious interrupt detected!\n");
+		trace_printk("img-hostport: unexpected spurious interrupt detected (0x%08X)!\n",
+			reg_value);
 		goto exit;
 	}
 
 	callee_id = CALLEE(reg_value);
 	caller_id = CALLER(reg_value);
 	user_message = USERMSG(reg_value);
-	dbgn("rcv -- %d:%d:%02X", callee_id, caller_id, user_message);
+	trace_printk("img-hostport: rcv -%c %d:%d:%02X\n", first_bit ? '-' : '*', callee_id, caller_id, user_message);
 
 	/*
 	 * callee_id is tainted, therefore must be checked.
 	 */
 	if (callee_id > MAX_ENDPOINT_ID) {
-		errn("endpoint with id = %u doesn't exist", callee_id);
+		trace_printk("img-hostport: endpoint with id = %u doesn't exist\n", callee_id);
 		goto deassert;
 	}
 
 	handler = module->endpoints.f[callee_id];
 	handler_in_use = module->endpoints.in_use + callee_id;
 	if (NULL == handler) {
-		errn("endpoint with id = %u not registered", callee_id);
+		trace_printk("img-hostport: endpoint with id = %u not registered\n", callee_id);
 		goto deassert;
 	}
 	spin_lock_irqsave(handler_in_use, flags);
