@@ -49,6 +49,13 @@ config SND_SOC_IMG_PISTACHIO_EVENT_TIMER
 	tristate "Support for Pistachio SoC Event Timer Driver"
 	depends on SND_SOC_IMG
 
+config SND_SOC_IMG_PISTACHIO_INTERNAL_DAC
+	tristate "Support for Pistachio SoC Internal DAC Driver"
+	depends on SND_SOC_IMG
+	help
+	  Say Y or M if you want to add support for Pistachio internal DAC
+	  driver for Imagination Technologies Pistachio internal DAC device.
+
 
 config SND_SOC_IMG_PISTACHIO_BUB
 	tristate "Audio support for Pistachio Bring-Up Board"
