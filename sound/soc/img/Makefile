@@ -9,4 +9,4 @@ obj-$(CONFIG_SND_SOC_IMG_PISTACHIO_EVENT_TIMER_ATU) += pistachio-event-timer-atu
 obj-$(CONFIG_SND_SOC_IMG_PISTACHIO_EVENT_TIMER_LOCAL) += pistachio-event-timer-local.o
 obj-$(CONFIG_SND_SOC_IMG_PISTACHIO_INTERNAL_DAC) += pistachio-internal-dac.o
 
-obj-$(CONFIG_SND_SOC_IMG_PISTACHIO) += pistachio-bub.o
+obj-$(CONFIG_SND_SOC_IMG_PISTACHIO) += pistachio.o
