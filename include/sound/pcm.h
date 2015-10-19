@@ -30,6 +30,9 @@
 #include <linux/mm.h>
 #include <linux/bitops.h>
 #include <linux/pm_qos.h>
+#if defined(CONFIG_HIGH_RES_TIMERS)
+#include <linux/hrtimer.h>
+#endif
 
 #define snd_pcm_substream_chip(substream) ((substream)->private_data)
 #define snd_pcm_chip(pcm) ((pcm)->private_data)
@@ -434,11 +437,6 @@ struct snd_pcm_runtime {
 #ifdef CONFIG_SND_PCM_XRUN_DEBUG
 	struct snd_pcm_hwptr_log *hwptr_log;
 #endif
-
-	/* startat status info */
-	struct snd_pcm_startat_state startat_state;
-	/* data associated with current startat timer, otherwise NULL */
-	void *startat_data;
 };
 
 struct snd_pcm_group {		/* keep linked substreams */
@@ -499,6 +497,16 @@ struct snd_pcm_substream {
 #endif /* CONFIG_SND_VERBOSE_PROCFS */
 	/* misc flags */
 	unsigned int hw_opened: 1;
+	/* start at wait queue */
+	wait_queue_head_t start_at_wait;
+	/* start at status info */
+	bool start_at_pending;
+	/* Clock type for pending start at */
+	int start_at_clock_class;
+#ifdef CONFIG_HIGH_RES_TIMERS
+	/* start at timer for use with system startat */
+	struct hrtimer start_at_timer;
+#endif
 };
 
 #define SUBSTREAM_BUSY(substream) ((substream)->ref_count > 0)
@@ -1090,6 +1098,9 @@ snd_pcm_sframes_t snd_pcm_lib_writev(struct snd_pcm_substream *substream,
 				     void __user **bufs, snd_pcm_uframes_t frames);
 snd_pcm_sframes_t snd_pcm_lib_readv(struct snd_pcm_substream *substream,
 				    void __user **bufs, snd_pcm_uframes_t frames);
+
+void snd_pcm_start_at_trigger(struct snd_pcm_substream *substream);
+void snd_pcm_start_at_cleanup(struct snd_pcm_substream *substream);
 
 extern const struct snd_pcm_hw_constraint_list snd_pcm_known_rates;
 

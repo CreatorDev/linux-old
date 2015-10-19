@@ -747,6 +747,7 @@ int snd_pcm_new_stream(struct snd_pcm *pcm, int stream, int substream_count)
 		INIT_LIST_HEAD(&substream->self_group.substreams);
 		list_add_tail(&substream->link_list, &substream->self_group.substreams);
 		atomic_set(&substream->mmap_count, 0);
+		init_waitqueue_head(&substream->start_at_wait);
 		prev = substream;
 	}
 	return 0;

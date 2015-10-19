@@ -508,14 +508,6 @@ enum {
 	SNDRV_PCM_CLOCK_CLASS_LAST = SNDRV_PCM_CLOCK_CLASS_AUDIO,
 };
 
-struct snd_pcm_startat_state {
-	int pending;			/* 0 or 1 */
-	int clock_class;		/* SNDRV_PCM_CLOCK_CLASS_* */
-	int clock_type;			/* SNDRV_PCM_TSTAMP_* or
-					 * SNDRV_PCM_AUDIO_TSTAMP_TYPE_* */
-	struct timespec start_time;
-};
-
 struct snd_startat {
 	int clock_class;
 	int clock_type;
