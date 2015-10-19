@@ -515,7 +515,11 @@
 
 		spim0_pins: spim0-pins {
 			spim0 {
-				pins = "mfio8", "mfio9", "mfio10";
+				pins = "mfio9", "mfio10";
+				function = "spim0";
+			};
+			spim0_clk: spim0-clk {
+				pins = "mfio8";
 				function = "spim0";
 			};
 		};
