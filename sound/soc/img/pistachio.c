@@ -24,7 +24,7 @@
 #include <sound/jack.h>
 #include <sound/soc.h>
 
-#include <dt-bindings/sound/pistachio-bub-audio.h>
+#include <dt-bindings/sound/pistachio-audio.h>
 
 #include "pistachio-event-timer.h"
 
