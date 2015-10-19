@@ -99,6 +99,10 @@
 	};
 };
 
+&spim0_clk {
+	drive-strength = <2>;
+};
+
 &spfi0 {
 	status = "okay";
 	pinctrl-0 = <&spim0_pins>;
