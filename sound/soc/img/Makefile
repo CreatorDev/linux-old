@@ -4,4 +4,6 @@ obj-$(CONFIG_SND_SOC_IMG_PARALLEL_OUT) += img-parallel-out.o
 obj-$(CONFIG_SND_SOC_IMG_SPDIF_IN) += img-spdif-in.o
 obj-$(CONFIG_SND_SOC_IMG_SPDIF_OUT) += img-spdif-out.o
 
+obj-$(CONFIG_SND_SOC_IMG_PISTACHIO_INTERNAL_DAC) += pistachio-internal-dac.o
+
 obj-$(CONFIG_SND_SOC_IMG_PISTACHIO) += pistachio.o
