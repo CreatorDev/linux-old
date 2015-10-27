@@ -1009,9 +1009,35 @@ static int mdc_dma_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int img_mdc_suspend(struct device *dev)
+{
+	struct mdc_dma *mdma = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(mdma->clk);
+
+	return 0;
+}
+
+static int img_mdc_resume(struct device *dev)
+{
+	struct mdc_dma *mdma = dev_get_drvdata(dev);
+	int ret = 0;
+
+	ret = clk_prepare_enable(mdma->clk);
+
+	return ret;
+}
+#endif /* CONFIG_PM_SLEEP */
+
+static const struct dev_pm_ops img_mdc_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(img_mdc_suspend, img_mdc_resume)
+};
+
 static struct platform_driver mdc_dma_driver = {
 	.driver = {
 		.name = "img-mdc-dma",
+		.pm	= &img_mdc_pm_ops,
 		.of_match_table = of_match_ptr(mdc_dma_of_match),
 	},
 	.probe = mdc_dma_probe,
