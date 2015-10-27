@@ -545,6 +545,8 @@ static void mdc_issue_desc(struct mdc_chan *mchan)
 	dev_dbg(mdma2dev(mdma), "Issuing descriptor on channel %d\n",
 		mchan->chan_nr);
 
+	mdma->soc->enable_chan(mchan);
+
 	val = mdc_chan_readl(mchan, MDC_GENERAL_CONFIG);
 	val |= MDC_GENERAL_CONFIG_LIST_IEN | MDC_GENERAL_CONFIG_IEN |
 		MDC_GENERAL_CONFIG_LEVEL_INT | MDC_GENERAL_CONFIG_PHYSICAL_W |
@@ -558,8 +560,6 @@ static void mdc_issue_desc(struct mdc_chan *mchan)
 	val = mdc_chan_readl(mchan, MDC_CONTROL_AND_STATUS);
 	val |= MDC_CONTROL_AND_STATUS_LIST_EN;
 	mdc_chan_writel(mchan, val, MDC_CONTROL_AND_STATUS);
-
-	mdma->soc->enable_chan(mchan);
 }
 
 static void mdc_issue_pending(struct dma_chan *chan)
@@ -678,7 +678,7 @@ static unsigned int mdc_get_new_events(struct mdc_chan *mchan)
 			MDC_CMDS_PROCESSED_CMDS_DONE_MASK;
 	} while (done1 != done2);
 
-	if(done1 > processed)
+	if (done1 >= processed)
 		ret = done1 - processed;
 	else
 		ret = ((MDC_CMDS_PROCESSED_CMDS_PROCESSED_MASK + 1) -
@@ -690,14 +690,11 @@ static unsigned int mdc_get_new_events(struct mdc_chan *mchan)
 static int mdc_terminate_all(struct dma_chan *chan)
 {
 	struct mdc_chan *mchan = to_mdc_chan(chan);
-	struct mdc_dma *mdma = mchan->mdma;
 	struct mdc_tx_desc *mdesc;
 	unsigned long flags;
 	LIST_HEAD(head);
 
 	spin_lock_irqsave(&mchan->vc.lock, flags);
-
-	mdma->soc->disable_chan(mchan);
 
 	mdc_chan_writel(mchan, MDC_CONTROL_AND_STATUS_CANCEL,
 			MDC_CONTROL_AND_STATUS);
@@ -743,7 +740,6 @@ static void mdc_free_chan_resources(struct dma_chan *chan)
 static irqreturn_t mdc_chan_irq(int irq, void *dev_id)
 {
 	struct mdc_chan *mchan = (struct mdc_chan *)dev_id;
-	struct mdc_dma *mdma = mchan->mdma;
 	struct mdc_tx_desc *mdesc;
 	unsigned int i, new_events;
 
@@ -753,7 +749,7 @@ static irqreturn_t mdc_chan_irq(int irq, void *dev_id)
 
 	new_events = mdc_get_new_events(mchan);
 
-	if(!new_events)
+	if (!new_events)
 		goto out;
 
 	mdesc = mchan->desc;
@@ -783,7 +779,6 @@ static irqreturn_t mdc_chan_irq(int irq, void *dev_id)
 		} else if (mdesc->list_cmds_done == mdesc->list_len) {
 			mchan->desc = NULL;
 			vchan_cookie_complete(&mdesc->vd);
-			mdma->soc->disable_chan(mchan);
 			mdc_issue_desc(mchan);
 			break;
 		}
@@ -1014,9 +1009,35 @@ static int mdc_dma_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int img_mdc_suspend(struct device *dev)
+{
+	struct mdc_dma *mdma = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(mdma->clk);
+
+	return 0;
+}
+
+static int img_mdc_resume(struct device *dev)
+{
+	struct mdc_dma *mdma = dev_get_drvdata(dev);
+	int ret = 0;
+
+	ret = clk_prepare_enable(mdma->clk);
+
+	return ret;
+}
+#endif /* CONFIG_PM_SLEEP */
+
+static const struct dev_pm_ops img_mdc_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(img_mdc_suspend, img_mdc_resume)
+};
+
 static struct platform_driver mdc_dma_driver = {
 	.driver = {
 		.name = "img-mdc-dma",
+		.pm	= &img_mdc_pm_ops,
 		.of_match_table = of_match_ptr(mdc_dma_of_match),
 	},
 	.probe = mdc_dma_probe,
