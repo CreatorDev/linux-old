@@ -929,7 +929,7 @@
 	};
 
 	clk_core: clk@18144000 {
-		compatible = "img,pistachio-clk";
+		compatible = "img,pistachio-clk", "syscon";
 		clocks = <&xtal>, <&cr_top EXT_CLK_AUDIO_IN>,
 			 <&cr_top EXT_CLK_ENET_IN>;
 		clock-names = "xtal", "audio_refclk_ext_gate",
@@ -969,6 +969,13 @@
 	fuse@18149200 {
 		compatible = "img,pistachio-efuse";
 		reg = <0x18149200 0x200>;
+	};
+
+	pistachio_irqwake: irq-wake {
+		compatible = "pistachio,irq-wake";
+		irq-start = <2>;
+		irq-end = <95>;
+		img,clk_core = <&clk_core>;
 	};
 
 	hash: hash@18149600 {
