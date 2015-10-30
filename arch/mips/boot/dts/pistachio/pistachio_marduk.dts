@@ -189,6 +189,7 @@
 
 &uart0 {
 	status = "okay";
+	assigned-clock-rates = <114278400>, <1843200>;
 };
 
 &uart1 {
