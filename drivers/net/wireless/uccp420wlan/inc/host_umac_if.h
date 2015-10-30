@@ -33,14 +33,16 @@
 #define MAX_KEY_LEN 16
 #define MAX_VIFS 2
 
-#define MAX_PEERS 3
+#define MAX_PEERS 15
 /* Additional queue for unicast frames directed to non-associated peers (for
  * e.g. Probe Responses etc)
  */
 #define MAX_PEND_Q_PER_AC (MAX_PEERS + MAX_VIFS)
 
 #ifdef MULTI_CHAN_SUPPORT
-#define MAX_CHANCTX 2
+#define MAX_CHANCTX MAX_VIFS
+#define MAX_OFF_CHANCTX MAX_VIFS
+#define OFF_CHANCTX_IDX_BASE MAX_CHANCTX
 #endif
 
 #define WEP40_KEYLEN 5
@@ -95,6 +97,20 @@ enum UMAC_QUEUE_NUM {
 	WLAN_AC_MAX_CNT
 };
 
+
+enum UMAC_EVENT_ROC_STAT {
+	UMAC_ROC_STAT_STARTED,
+	UMAC_ROC_STAT_STOPPED,
+	UMAC_ROC_STAT_DONE,
+	UMAC_ROC_STAT_ABORTED
+};
+
+enum UMAC_VIF_CHANCTX_TYPE {
+	UMAC_VIF_CHANCTX_TYPE_OPER,
+	UMAC_VIF_CHANCTX_TYPE_OFF,
+	MAX_UMAC_VIF_CHANCTX_TYPES
+};
+
 struct umac_event_tx_done {
 	struct host_mac_msg_hdr hdr;
 
@@ -114,6 +130,7 @@ struct umac_event_tx_done {
 #ifdef MULTI_CHAN_SUPPORT
 #define TX_DONE_STAT_DISCARD_CHSW (6)
 #endif
+#define TX_DONE_STAT_DISCARD_OP_TX (7)
 	unsigned char frm_status[MAX_TX_CMDS];
 	unsigned char retries_num[MAX_TX_CMDS];
 	/* rate = Units of 500 Kbps or mcs index = 0 to 7*/
@@ -231,6 +248,10 @@ struct umac_event_mib_stats {
 
 struct umac_event_mac_stats {
 	struct host_mac_msg_hdr hdr;
+	unsigned int roc_start;
+	unsigned int roc_stop;
+	unsigned int roc_complete;
+	unsigned int roc_stop_complete;
 	/* TX related */
 	unsigned int tx_cmd_cnt; /* Num of TX commands received from host */
 	unsigned int tx_done_cnt; /* Num of Tx done events sent to host */
@@ -409,6 +430,7 @@ enum UMAC_EVENT_TAG {
 	UMAC_EVENT_RF_CALIB_DATA,
 	UMAC_EVENT_RADAR_DETECTED,
 	UMAC_EVENT_MSRMNT_COMPLETE,
+	UMAC_EVENT_ROC_STATUS,
 #ifdef MULTI_CHAN_SUPPORT
 	UMAC_EVENT_CHAN_SWITCH,
 #endif
@@ -424,6 +446,9 @@ enum CONNECT_RESULT_TAG {
 	CONNECT_START_IBSS
 };
 
+enum UMAC_TX_FLAGS {
+	UMAC_TX_FLAG_OFFCHAN_FRM
+};
 
 /* Commands */
 struct cmd_tx_ctrl {
@@ -448,6 +473,9 @@ struct cmd_tx_ctrl {
 	 * need to be transmit even though TX has been disabled
 	 */
 	unsigned int force_tx;
+
+	/* Flags to communicate special cases regarding the frame to the FW */
+	unsigned int tx_flags;
 
 	unsigned char num_rates;
 
@@ -678,10 +706,12 @@ struct cmd_roc {
 	struct host_mac_msg_hdr hdr;
 #define ROC_STOP 0
 #define ROC_START 1
-	unsigned int roc_status;
+	unsigned int roc_ctrl;
 	unsigned int roc_channel;
 	unsigned int roc_duration;
-
+#define ROC_TYPE_NORMAL 0
+#define ROC_TYPE_OFFCHANNEL_TX 1
+	unsigned int roc_type;
 } __packed;
 
 enum POWER_SAVE_TAG {
@@ -1097,6 +1127,11 @@ struct cmd_bt_info {
 #define BT_STATE_OFF 0
 #define BT_STATE_ON  1
 	unsigned int bt_state;
+} __packed;
+
+struct umac_event_roc_status {
+	struct host_mac_msg_hdr hdr;
+	unsigned int roc_status;
 } __packed;
 
 #endif /*_UCCP420HOST_UMAC_IF_H_*/

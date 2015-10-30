@@ -33,6 +33,8 @@
 #include "hal.h"
 #include "host_umac_if.h"
 
+#define UMAC_ROC_AC WLAN_AC_VO
+
 struct umac_key {
 	unsigned char *peer_mac;
 	unsigned char *tx_mic;
@@ -235,7 +237,8 @@ extern int uccp420wlan_prog_vht_bform(unsigned int vht_beamform_status,
 
 extern int uccp420wlan_prog_roc(unsigned int roc_status,
 				unsigned int roc_channel,
-				unsigned int roc_duration);
+				unsigned int roc_duration,
+				unsigned int roc_type);
 
 #ifdef CONFIG_PM
 extern int uccp420wlan_prog_econ_ps_state(int if_index,
