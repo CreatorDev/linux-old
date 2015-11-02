@@ -904,6 +904,11 @@
 		status = "disabled";
 	};
 
+	sram: sram@1b000000 {
+		compatible = "mmio-sram";
+		reg = <0x1b000000 0x10000>;
+	};
+
 	mdc: dma-controller@18143000 {
 		compatible = "img,pistachio-mdc-dma";
 		reg = <0x18143000 0x1000>;
