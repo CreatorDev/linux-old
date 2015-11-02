@@ -815,7 +815,7 @@
 		usb_pwr_on_pins: usb-pwr-on-pins {
 			usb-pwr-on {
 				pins = "mfio86";
-				function = "bt_pll_lock";
+				function = "rpu_l_pll_lock";
 			};
 		};
 
