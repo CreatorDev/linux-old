@@ -466,6 +466,7 @@ int spi_nand_register(struct spi_nand *snand, struct nand_flash_dev *flash_ids)
 	struct mtd_part_parser_data ppdata = {};
 	struct mtd_info *mtd = &snand->mtd;
 	struct device_node *np = snand->dev->of_node;
+	const char __maybe_unused *of_mtd_name = NULL;
 	int ret;
 
 	/* Let's check all the hooks are in-place so we don't panic later */
@@ -490,7 +491,13 @@ int spi_nand_register(struct spi_nand *snand, struct nand_flash_dev *flash_ids)
 	if (of_get_nand_on_flash_bbt(np))
 		chip->bbt_options |= NAND_BBT_USE_FLASH | NAND_BBT_NO_OOB;
 
-	mtd->name = snand->name;
+#ifdef CONFIG_MTD_OF_PARTS
+	of_property_read_string(np, "linux,mtd-name", &of_mtd_name);
+#endif
+	if (of_mtd_name)
+		mtd->name = of_mtd_name;
+	else
+		mtd->name = snand->name;
 	mtd->owner = THIS_MODULE;
 	mtd->priv = chip;
 
