@@ -996,6 +996,7 @@ int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
 	struct device *dev = nor->dev;
 	struct mtd_info *mtd = nor->mtd;
 	struct device_node *np = dev->of_node;
+	const char __maybe_unused *of_mtd_name = NULL;
 	int ret;
 	int i;
 
@@ -1052,7 +1053,12 @@ int spi_nor_scan(struct spi_nor *nor, const char *name, enum read_mode mode)
 		write_sr(nor, 0);
 	}
 
-	if (!mtd->name)
+#ifdef CONFIG_MTD_OF_PARTS
+	of_property_read_string(np, "linux,mtd-name", &of_mtd_name);
+#endif
+	if (of_mtd_name)
+		mtd->name = of_mtd_name;
+	else if (!mtd->name)
 		mtd->name = dev_name(dev);
 	mtd->type = MTD_NORFLASH;
 	mtd->writesize = 1;
