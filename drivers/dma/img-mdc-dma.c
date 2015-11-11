@@ -678,7 +678,7 @@ static unsigned int mdc_get_new_events(struct mdc_chan *mchan)
 			MDC_CMDS_PROCESSED_CMDS_DONE_MASK;
 	} while (done1 != done2);
 
-	if(done1 > processed)
+	if (done1 >= processed)
 		ret = done1 - processed;
 	else
 		ret = ((MDC_CMDS_PROCESSED_CMDS_PROCESSED_MASK + 1) -
@@ -749,7 +749,7 @@ static irqreturn_t mdc_chan_irq(int irq, void *dev_id)
 
 	new_events = mdc_get_new_events(mchan);
 
-	if(!new_events)
+	if (!new_events)
 		goto out;
 
 	mdesc = mchan->desc;
