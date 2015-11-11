@@ -44,6 +44,10 @@ static int pistachio_pm_enter(suspend_state_t state)
 {
 	local_flush_tlb_all();
 
+	/* AUDIO Workaround: Gate audio clocks. */
+	clear_bit(2, (void __iomem *)CR_TOP_MIPS_CLOCK_GATE);
+	clear_bit(22, (void __iomem *)CR_TOP_MIPS_CLOCK_GATE);
+
 	if (!pistachio_suspend_in_sram_fn) {
 		/*
 		 * Disable MIPS clock, this is only clock gating not power gating.
@@ -72,6 +76,10 @@ static int pistachio_pm_enter(suspend_state_t state)
 		 */
 		pistachio_suspend_in_sram_fn();
 	}
+
+	/* AUDIO Workaround: Enable Audio clks. */
+	set_bit(2, (void __iomem *)CR_TOP_MIPS_CLOCK_GATE);
+	set_bit(22, (void __iomem *)CR_TOP_MIPS_CLOCK_GATE);
 
 	return 0;
 }
