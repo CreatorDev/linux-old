@@ -350,17 +350,24 @@ static int spi_nand_device_read_cache(struct spi_nand *snand,
 {
 	struct spi_nand_device *snand_dev = snand->priv;
 	struct spi_nand_device_cmd *cmd = &snand_dev->cmd;
+	struct spi_device *spi = snand_dev->spi;
 
 	memset(cmd, 0, sizeof(struct spi_nand_device_cmd));
-	cmd->n_cmd = 5;
-	cmd->cmd[0] = SPI_NAND_READ_CACHE_X4;
+	if ((spi->mode & SPI_RX_DUAL) || (spi->mode & SPI_RX_QUAD))
+		cmd->n_cmd = 5;
+	else
+		cmd->n_cmd = 4;
+	cmd->cmd[0] = (spi->mode & SPI_RX_QUAD) ? SPI_NAND_READ_CACHE_X4 :
+			((spi->mode & SPI_RX_DUAL) ? SPI_NAND_READ_CACHE_X2 :
+			SPI_NAND_READ_CACHE);
 	cmd->cmd[1] = 0; /* dummy byte */
 	cmd->cmd[2] = (u8)((page_offset & 0xff00) >> 8);
 	cmd->cmd[3] = (u8)(page_offset & 0xff);
 	cmd->cmd[4] = 0; /* dummy byte */
 	cmd->n_rx = length;
 	cmd->rx_buf = read_buf;
-	cmd->rx_nbits = 4;
+	cmd->rx_nbits = (spi->mode & SPI_RX_QUAD) ? 4 :
+			((spi->mode & SPI_RX_DUAL) ? 2 : 1);
 
 	dev_dbg(snand->dev, "%s: offset 0x%x\n", __func__, page_offset);
 
