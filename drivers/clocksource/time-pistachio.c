@@ -121,8 +121,7 @@ static struct clocksource pistachio_clocksource_gpt = {
 	.disable	= pistachio_clocksource_disable,
 	.read		= pistachio_clocksource_read_cycles,
 	.mask		= CLOCKSOURCE_MASK(32),
-	.flags		= CLOCK_SOURCE_IS_CONTINUOUS |
-			  CLOCK_SOURCE_SUSPEND_NONSTOP,
+	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
 static void __init pistachio_clksrc_of_init(struct device_node *node)
