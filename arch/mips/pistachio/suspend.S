@@ -43,6 +43,19 @@
 #define	CR_DDR_CTRL			0xB8149020
 #define	CR_DDR_CLK_MASK			0x00000002
 
+/* External timer dividers */
+#define	CR_TOP_COUNTERSLOWDIV1_CTRL		0xB8144914
+#define	COUNTERSLOW_DIV1_32K_DIV_VAL		0x0000006F
+#define	COUNTERSLOW_DIV1_32K_SCALED_DIV_VAL	0x0000001F
+
+#define	CR_TOP_IRDIV1_CTRL			0xB814491C
+#define	IR_DIV1_32K_DIV_VAL			0x00000057
+#define	IR_DIV1_DIV1_32K_SCALED_DIV_VAL		0x00000018
+
+#define	CR_TOP_ENETPHYCLKOUT_CTRL		0xB8144230
+#define	ENET_PHYCLKOUT_50M_DIV_VAL		0x00000006
+#define	ENET_PHYCLKOUT_50M_SCALED_DIV_VAL	0x00000001
+
 .text
 FEXPORT(pistachio_sram_suspend)
 LEAF(pistachio_sram_suspend)
@@ -101,6 +114,27 @@ sys_pll_scale:
 	or	v0, t3, t2
 	PTR_S	v0, (t0)
 
+slow_timer_clk_adj:
+	/*
+	 * Adjust external slow clock since its on sys_pll
+	 * slow_counter prediv runs at 3.125Mhz so using new divider
+	 * 0x1F (val-1) (count => 32) we can derive 3.125Mhz from 100Mhz.
+	 */
+	PTR_LI	t0, CR_TOP_COUNTERSLOWDIV1_CTRL
+	PTR_LI	t1, COUNTERSLOW_DIV1_32K_SCALED_DIV_VAL
+	PTR_S	t1, (t0)
+
+ir_adj:
+	PTR_LI	t0, CR_TOP_IRDIV1_CTRL
+	PTR_LI	t1, IR_DIV1_DIV1_32K_SCALED_DIV_VAL
+	PTR_S	t1, (t0)
+
+	/* to support wake-on-lan */
+enet_adj:
+	PTR_LI	t0, CR_TOP_ENETPHYCLKOUT_CTRL
+	PTR_LI	t1, ENET_PHYCLKOUT_50M_SCALED_DIV_VAL
+	PTR_S	t1, (t0)
+
 pll_lock_loop1:
 	PTR_LI	t0, CR_SYS_PLL_STATUS
 	PTR_L	t1, (t0)
@@ -132,6 +166,21 @@ sys_pll_setup:
 	and	t3, t3, CR_SYS_PLL_FBDIV_MASK
 	or	v0, t3, t2
 	PTR_S	v0, (t0)
+
+slow_timer_setup:
+	PTR_LI	t0, CR_TOP_COUNTERSLOWDIV1_CTRL
+	PTR_LI	t1, COUNTERSLOW_DIV1_32K_DIV_VAL
+	PTR_S	t1, (t0)
+
+ir_setup:
+	PTR_LI	t0, CR_TOP_IRDIV1_CTRL
+	PTR_LI	t1, IR_DIV1_32K_DIV_VAL
+	PTR_S	t1, (t0)
+
+enet_setup:
+	PTR_LI	t0, CR_TOP_ENETPHYCLKOUT_CTRL
+	PTR_LI	t1, ENET_PHYCLKOUT_50M_DIV_VAL
+	PTR_S	t1, (t0)
 
 pll_lock_loop:
 	PTR_LI	t0, CR_SYS_PLL_STATUS
