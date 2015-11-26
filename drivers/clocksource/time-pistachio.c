@@ -170,7 +170,7 @@ static void __init pistachio_clksrc_of_init(struct device_node *node)
 
 	/* Switch to using the fast counter clock */
 	ret = regmap_update_bits(periph_regs, PERIP_TIMER_CONTROL,
-				 0xf, 0x0);
+				 0x1, 0x0);
 	if (ret)
 		return;
 
