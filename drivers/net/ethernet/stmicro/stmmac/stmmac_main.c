@@ -3052,6 +3052,10 @@ int stmmac_suspend(struct net_device *ndev)
 	priv->hw->dma->stop_tx(priv->ioaddr);
 	priv->hw->dma->stop_rx(priv->ioaddr);
 
+	/* Release the DMA TX/RX socket buffers */
+	dma_free_rx_skbufs(priv);
+	dma_free_tx_skbufs(priv);
+
 	/* Enable Power down mode by programming the PMT regs */
 	if (device_may_wakeup(priv->device)) {
 		priv->hw->mac->pmt(priv->hw, priv->wolopts);
