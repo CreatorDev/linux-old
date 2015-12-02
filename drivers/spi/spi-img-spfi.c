@@ -551,8 +551,14 @@ static void img_spfi_config(struct spi_master *master, struct spi_device *spi,
 	spfi_writel(spfi, val, SPFI_DEVICE_PARAMETER(spi->chip_select));
 
 	if (!list_is_last(&xfer->transfer_list, &master->cur_msg->transfers) &&
-		(xfer->tx_buf) && (xfer->len <= SPFI_DATA_REQUEST_MAX_SIZE)
-		&& !is_pending) {
+		/*
+		 * For duplex mode (both the tx and rx buffers are !NULL) the
+		 * CMD, ADDR, and DUMMY byte parts of the transaction register
+		 * should always be 0 and therefore the pending transfer
+		 * technique cannot be used.
+		 */
+		(xfer->tx_buf) && (!xfer->rx_buf) &&
+		(xfer->len <= SPFI_DATA_REQUEST_MAX_SIZE) && !is_pending) {
 		transact = (1 & SPFI_TRANSACTION_CMD_MASK) <<
 			SPFI_TRANSACTION_CMD_SHIFT;
 		transact |= ((xfer->len - 1) & SPFI_TRANSACTION_ADDR_MASK) <<
