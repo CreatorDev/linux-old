@@ -538,6 +538,13 @@ config IMG_PDM
 	  To compile this driver as a module, choose M here: the module will
 	  be called img-pdm.
 
+config UBOOT_BOOTCOUNT
+	tristate "U-Boot Bootcount driver"
+	depends on OF
+	help
+	  The U-Boot Bootcount driver allows to access the
+	  bootcounter through sysfs file.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
