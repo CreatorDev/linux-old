@@ -847,7 +847,7 @@
 
 	wdt: watchdog@18102100 {
 		compatible = "img,pdc-wdt";
-		reg = <0x18102100 0x100>;
+		reg = <0x18102100 0x20>;
 		interrupts = <GIC_SHARED 52 IRQ_TYPE_LEVEL_HIGH>;
 		clocks = <&clk_periph PERIPH_CLK_WD>, <&cr_periph SYS_CLK_WD>;
 		clock-names = "wdt", "sys";

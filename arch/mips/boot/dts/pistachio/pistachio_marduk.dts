@@ -11,6 +11,7 @@
 
 #include "pistachio.dtsi"
 #include <dt-bindings/sound/pistachio-audio.h>
+#include "pistachio_board_uboot.dtsi"
 
 / {
 	model = "IMG Marduk";
