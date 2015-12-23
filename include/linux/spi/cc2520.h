@@ -22,6 +22,7 @@ struct cc2520_platform_data {
 	int reset;
 	int vreg;
 	unsigned int extclockfreq;
+	bool registerclk;
 };
 
 #endif
