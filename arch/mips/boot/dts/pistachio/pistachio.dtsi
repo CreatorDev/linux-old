@@ -766,14 +766,14 @@
 		};
 
 		dac_clk_pin: dac-clk-pin {
-			dac-clk {
+			pin_dac_clk: dac-clk {
 				pins = "mfio45";
 				function = "i2s_dac_clk";
 			};
 		};
 
 		i2s_mclk_pin: i2s-mclk-pin {
-			i2s-mclk {
+			pin_i2s_mclk: i2s-mclk {
 				pins = "mfio36";
 				function = "i2s_out";
 			};
@@ -795,7 +795,7 @@
 		};
 
 		i2s_out_pins: i2s-out-pins {
-			i2s-out {
+			pins_i2s_out: i2s-out {
 				pins = "mfio37", "mfio38", "mfio39",
 				       "mfio40", "mfio41", "mfio42",
 				       "mfio43", "mfio44";
