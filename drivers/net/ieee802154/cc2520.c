@@ -21,6 +21,7 @@
 #include <linux/skbuff.h>
 #include <linux/of_gpio.h>
 #include <linux/ieee802154.h>
+#include <linux/clk-provider.h>
 
 #include <net/mac802154.h>
 #include <net/cfg802154.h>
@@ -210,6 +211,8 @@ struct cc2520_private {
 	struct work_struct fifop_irqwork;/* Workqueue for FIFOP */
 	spinlock_t lock;		/* Lock for is_tx*/
 	struct completion tx_complete;	/* Work completion for Tx */
+	bool started;			/* Flag to know if device is up */
+	struct clk *clk;		/* external clock */
 };
 
 /* Generic Functions */
@@ -863,9 +866,43 @@ static int cc2520_get_platform_data(struct spi_device *spi,
 		 * default to 1MHz(reset value)
 		 */
 		pdata->extclockfreq = CC2520_EXTCLOCK_DEFAULT_FREQ;
-	}
+	} else
+		pdata->registerclk = true;
 
 	return 0;
+}
+
+static int cc2520_register_clk(struct spi_device *spi,
+			       struct cc2520_platform_data *pdata)
+{
+	struct device_node *np = spi->dev.of_node;
+	struct cc2520_private *priv = spi_get_drvdata(spi);
+	int ret = 0;
+
+	if (pdata->registerclk) {
+		if (np) {
+			priv->clk = clk_register_fixed_rate(&spi->dev, np->name,
+					NULL, CLK_IS_ROOT, pdata->extclockfreq);
+
+			if (!IS_ERR(priv->clk)) {
+				ret = of_clk_add_provider(np,
+							  of_clk_src_simple_get,
+							  priv->clk);
+				if (ret) {
+					clk_unregister(priv->clk);
+					dev_err(&spi->dev,
+						"Failed to add clk provider\n");
+				}
+			} else {
+				dev_err(&spi->dev, "Failed to register clk\n");
+				ret = PTR_ERR(priv->clk);
+			}
+		} else
+			dev_err(&spi->dev, "No device node found, ext-clk won't"
+						" be registered\n");
+	}
+
+	return ret;
 }
 
 static int cc2520_hw_init(struct cc2520_private *priv)
@@ -1151,7 +1188,15 @@ static int cc2520_probe(struct spi_device *spi)
 	if (ret)
 		goto err_hw_init;
 
+	ret = cc2520_register_clk(spi, &pdata);
+	if (ret)
+		goto err_free_device;
+
 	return 0;
+
+err_free_device:
+	ieee802154_unregister_hw(priv->hw);
+	ieee802154_free_hw(priv->hw);
 
 err_hw_init:
 	mutex_destroy(&priv->buffer_mutex);
@@ -1162,6 +1207,11 @@ err_hw_init:
 static int cc2520_remove(struct spi_device *spi)
 {
 	struct cc2520_private *priv = spi_get_drvdata(spi);
+
+	if (priv->clk) {
+		of_clk_del_provider(spi->dev.of_node);
+		clk_unregister(priv->clk);
+	}
 
 	mutex_destroy(&priv->buffer_mutex);
 	flush_work(&priv->fifop_irqwork);
