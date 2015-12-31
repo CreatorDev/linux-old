@@ -402,6 +402,7 @@ enum UMAC_CMD_TAG {
 #ifdef MULTI_CHAN_SUPPORT
 	UMAC_CMD_CHANCTX_TIME_INFO,
 #endif
+	UMAC_CMD_CONT_TX,
 };
 
 enum UMAC_EVENT_TAG {
@@ -933,6 +934,12 @@ struct cmd_aux_adc_chain_sel {
 #define AUX_ADC_CHAIN2	2
 	unsigned int chain_id;
 } __packed;
+
+struct cmd_cont_tx {
+	struct host_mac_msg_hdr hdr;
+	unsigned int op;
+} __packed;
+
 
 
 /* DFS SUPPORT */

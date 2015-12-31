@@ -204,6 +204,7 @@ struct wifi_params {
 	int start_prod_mode;
 	int init_prod;
 	unsigned char bypass_vpd;
+	unsigned int cont_tx;
 };
 
 struct cmd_send_recv_cnt {

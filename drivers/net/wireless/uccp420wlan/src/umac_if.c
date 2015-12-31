@@ -2037,6 +2037,19 @@ int uccp420wlan_prog_aux_adc_chain(unsigned int chain_id)
 				    UMAC_CMD_AUX_ADC_CHAIN_SEL);
 }
 
+int uccp420wlan_cont_tx(int val)
+{
+	struct cmd_cont_tx status;
+
+	memset(&status, 0, sizeof(struct cmd_cont_tx));
+	status.op = val;
+
+	return uccp420wlan_send_cmd((unsigned char *)&status,
+				    sizeof(struct cmd_cont_tx),
+				    UMAC_CMD_CONT_TX);
+}
+
+
 
 int uccp420wlan_prog_mib_stats(void)
 {

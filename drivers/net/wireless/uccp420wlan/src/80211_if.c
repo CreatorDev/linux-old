@@ -1841,7 +1841,8 @@ void uccp420wlan_scan_complete(void *context,
 			ieee80211_scan_completed(dev->hw, false);
 
 			/* WAR for TT_PRB0164. To be removed after patch
-			   submitted to kernel */
+			 *  submitted to kernel
+			 */
 			for (i = 0; i < MAX_VIFS; i++) {
 
 				if (!(dev->active_vifs & (1 << i)))
@@ -2242,7 +2243,8 @@ static void unassign_vif_chanctx(struct ieee80211_hw *hw,
 	mutex_lock(&dev->mutex);
 
 	/* We need to specifically handle flushing tx queues for the AP VIF
-	 * here (for STA VIF, mac80211 handles this via flush_queues) */
+	 * here (for STA VIF, mac80211 handles this via flush_queues)
+	 */
 	if (vif->type == NL80211_IFTYPE_AP) {
 		/* Flush all queues for this VIF */
 		for (i = 0; i < NUM_ACS; i++)
@@ -2301,7 +2303,8 @@ static void flush_queues(struct ieee80211_hw *hw,
 	/* This op should not get called during ROC operation, so we can assume
 	 * that the vif_chanctx_type will be UMAC_VIF_CHANCTX_TYPE_OPER. As for
 	 * TSMC operation the VIF can only be associated to one channel context,
-	 * so we pass uvif->chanctx->index as the parameter for chanctx_idx */
+	 * so we pass uvif->chanctx->index as the parameter for chanctx_idx
+	 */
 	uccp420_flush_vif_queues(dev,
 				 uvif,
 				 uvif->chanctx->index,
@@ -2677,6 +2680,8 @@ static int proc_read_config(struct seq_file *m, void *v)
 		   wifi->params.payload_length);
 	seq_printf(m, "start_prod_mode = channel: %d\n",
 		   wifi->params.start_prod_mode);
+	seq_printf(m, "continuous_tx = %d\n",
+		   wifi->params.cont_tx);
 
 	if (ftm || wifi->params.production_test)
 		seq_printf(m, "set_tx_power = %d dB\n",
@@ -3783,6 +3788,13 @@ static ssize_t proc_write_config(struct file *file,
 			       (unsigned int) val,
 			       AUX_ADC_CHAIN1,
 			       AUX_ADC_CHAIN2);
+	} else if ((wifi->params.production_test) &&
+		param_get_val(buf, "continuous_tx=", &val)) {
+		if (val == 0 || val == 1) {
+			wifi->params.cont_tx = val;
+			uccp420wlan_cont_tx(val);
+		   } else
+			pr_err("Invalid tx_continuous parameter\n");
 	} else if ((wifi->params.production_test) &&
 		    param_get_val(buf, "start_prod_mode=", &val)) {
 			unsigned int pri_chnl_num = 0;

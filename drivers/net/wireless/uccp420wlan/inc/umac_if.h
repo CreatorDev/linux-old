@@ -186,6 +186,7 @@ extern int uccp420wlan_prog_mcast_filter_control(unsigned int
 
 extern int uccp420wlan_prog_rcv_bcn_mode(unsigned int  bcn_rcv_mode);
 extern int uccp420wlan_prog_aux_adc_chain(unsigned int chain_id);
+extern int uccp420wlan_cont_tx(int val);
 extern int uccp420wlan_prog_txq_params(int index,
 				       unsigned char *vif_addr,
 				       unsigned int queue,
