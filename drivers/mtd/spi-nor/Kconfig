@@ -28,4 +28,12 @@ config SPI_FSL_QUADSPI
 	  This enables support for the Quad SPI controller in master mode.
 	  We only connect the NOR to this controller now.
 
+config MTD_SPI_NOR_WINBOND_OTP
+	bool "Support for winbond security register and unique ID"
+	depends on MTD_SPI_NOR
+	default n
+	help
+	  This enables support for read/write of winbond security registers
+	  as user OTP and also reading of NOR unique ID as factory OTP.
+
 endif # MTD_SPI_NOR
