@@ -639,7 +639,6 @@ static int atu_adjtimex(struct timex *txc)
 			int dir;
 
 			freq = txc->freq;
-			freq = (freq * NSEC_PER_USEC) >> 16;
 
 			if (freq < 0) {
 				dir = -1;
