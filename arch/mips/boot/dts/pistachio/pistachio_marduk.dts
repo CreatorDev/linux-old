@@ -74,6 +74,13 @@
 			i2s-in {
 				cpu-dai = <&i2s_in>;
 				format = "i2s";
+
+				ak5720vt {
+					mclk = <PISTACHIO_MCLK_I2S>;
+					mclk-fs = <256>;
+					mclk-min-freq = <8192000>;
+					mclk-max-freq = <24576000>;
+				};
 			};
 		};
 
