@@ -22,7 +22,7 @@
 #include <linux/timer.h>
 #include <linux/uaccess.h>
 
-#include <uapi/atu_ioctl.h>
+#include <uapi/misc/atu_ioctl.h>
 
 #include "atu_clk_maintainer.h"
 #include "atu_clk_ntp.h"
