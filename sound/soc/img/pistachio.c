@@ -455,6 +455,7 @@ static int pistachio_card_change_rate(struct pistachio_card *pbc,
 	int ret;
 
 	mutex_lock(&pbc->rate_mutex);
+	*active_rate = 0;
 	ret = _pistachio_card_change_rate(pbc, rate, i2s);
 	if (!ret)
 		*active_rate = rate;
