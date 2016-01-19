@@ -30,10 +30,10 @@
 
 #include "pistachio-event-timer.h"
 
-#define	PLL_RATE_8000_16000_32000_48000_96000_192000	147456000
-#define	PLL_RATE_11025_22050_44100_64000_88200_176400	135475200
-#define	PISTACHIO_MAX_DIV				256
-#define	PISTACHIO_MIN_MCLK_FREQ				(135475200 / 256)
+#define	PISTACHIO_PLL_RATE_A		147456000
+#define	PISTACHIO_PLL_RATE_B		135475200
+#define	PISTACHIO_MAX_DIV		256
+#define	PISTACHIO_MIN_MCLK_FREQ		(135475200 / 256)
 
 #define	PISTACHIO_CLOCK_MASTER_EXT	-1
 #define	PISTACHIO_CLOCK_MASTER_LOOPBACK	-2
@@ -398,16 +398,16 @@ static inline int pistachio_card_get_pll_rate(unsigned int rate)
 	case 16000:
 	case 32000:
 	case 48000:
+	case 64000:
 	case 96000:
 	case 192000:
-		return PLL_RATE_8000_16000_32000_48000_96000_192000;
+		return PISTACHIO_PLL_RATE_A;
 	case 11025:
 	case 22050:
 	case 44100:
-	case 64000:
 	case 88200:
 	case 176400:
-		return PLL_RATE_11025_22050_44100_64000_88200_176400;
+		return PISTACHIO_PLL_RATE_B;
 	default:
 		return -EINVAL;
 	}
@@ -1544,7 +1544,7 @@ static int pistachio_card_init_rates(struct pistachio_card *pbc)
 	unsigned int rate;
 	int ret;
 
-	rate = PLL_RATE_11025_22050_44100_64000_88200_176400;
+	rate = PISTACHIO_PLL_RATE_B;
 	ret = clk_set_rate(pbc->audio_pll, rate);
 	if (ret)
 		return ret;
