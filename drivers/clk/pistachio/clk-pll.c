@@ -66,10 +66,8 @@
 #define MAX_OUTPUT_FRAC			1600000000UL
 
 /* Fractional PLL operating modes */
-enum pll_mode {
-	PLL_MODE_FRAC,
-	PLL_MODE_INT,
-};
+#define PLL_MODE_INT			1
+#define PLL_MODE_FRAC			0
 
 struct pistachio_clk_pll {
 	struct clk_hw hw;
@@ -105,7 +103,7 @@ static inline struct pistachio_clk_pll *to_pistachio_pll(struct clk_hw *hw)
 	return container_of(hw, struct pistachio_clk_pll, hw);
 }
 
-static inline enum pll_mode pll_frac_get_mode(struct clk_hw *hw)
+static inline u32 pll_frac_get_mode(struct clk_hw *hw)
 {
 	struct pistachio_clk_pll *pll = to_pistachio_pll(hw);
 	u32 val;
@@ -114,7 +112,7 @@ static inline enum pll_mode pll_frac_get_mode(struct clk_hw *hw)
 	return val ? PLL_MODE_INT : PLL_MODE_FRAC;
 }
 
-static inline void pll_frac_set_mode(struct clk_hw *hw, enum pll_mode mode)
+static inline void pll_frac_set_mode(struct clk_hw *hw, u32 mode)
 {
 	struct pistachio_clk_pll *pll = to_pistachio_pll(hw);
 	u32 val;
@@ -276,12 +274,6 @@ static int pll_gf40lp_frac_set_rate(struct clk_hw *hw, unsigned long rate,
 		(params->postdiv1 << PLL_FRAC_CTRL2_POSTDIV1_SHIFT) |
 		(params->postdiv2 << PLL_FRAC_CTRL2_POSTDIV2_SHIFT);
 	pll_writel(pll, val, PLL_CTRL2);
-
-	/* set operating mode */
-	if (params->frac)
-		pll_frac_set_mode(hw, PLL_MODE_FRAC);
-	else
-		pll_frac_set_mode(hw, PLL_MODE_INT);
 
 	/* set operating mode */
 	if (params->frac)
