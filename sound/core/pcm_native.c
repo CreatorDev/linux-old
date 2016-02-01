@@ -1149,8 +1149,10 @@ static int snd_pcm_startat_system(struct snd_pcm_substream *substream,
 	hrtimer_init(&substream->start_at_timer, clock, HRTIMER_MODE_ABS);
 	substream->start_at_timer.function = snd_pcm_do_start_time;
 
-	return hrtimer_start(&substream->start_at_timer,
+	hrtimer_start(&substream->start_at_timer,
 			timespec_to_ktime(*start_time), HRTIMER_MODE_ABS);
+
+	return 0;
 #else
 	return -ENOSYS;
 #endif
