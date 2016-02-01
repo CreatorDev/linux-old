@@ -116,7 +116,7 @@ static int __init pistachio_pm_init(void)
 		goto put_node;
 	}
 
-	sram_pool = dev_get_gen_pool(&pdev->dev);
+	sram_pool = gen_pool_get(&pdev->dev, NULL);
 	if (!sram_pool) {
 		pr_warn("%s: sram pool unavailable!\n", __func__);
 		ret = -ENODEV;
