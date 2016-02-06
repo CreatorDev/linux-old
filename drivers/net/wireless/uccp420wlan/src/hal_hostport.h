@@ -148,7 +148,7 @@ struct event_hal {
 } _PACKED_;
 
 
-int _uccp420wlan_80211if_init(void);
+int _uccp420wlan_80211if_init(struct proc_dir_entry **);
 void _uccp420wlan_80211if_exit(void);
 
 /*Porting information:

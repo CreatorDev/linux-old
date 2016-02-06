@@ -502,10 +502,14 @@ static int uccp420wlan_send_cmd(unsigned char *buf,
 	unsigned long irq_flags;
 
 	rcu_read_lock();
+
 	p = (struct lmac_if_data *)(rcu_dereference(lmac_if));
 
 	if (!p) {
+		pr_err("%s: Unable to retrieve lmac_if\n", __func__);
+#ifdef DRIVER_DEBUG
 		WARN_ON(1);
+#endif
 		rcu_read_unlock();
 		return -1;
 	}
@@ -698,6 +702,10 @@ int uccp420wlan_proc_tx(void)
 		tx_cmd.bcc_or_ldpc = 0;
 		tx_cmd.stbc_enabled = 0;
 		tx_cmd.num_rates++;
+	} else {
+		WARN_ON(1);
+		rcu_read_unlock();
+		return -90;
 	}
 
 	nbuf = alloc_skb(sizeof(struct cmd_tx_ctrl) +
@@ -1454,18 +1462,28 @@ int uccp420wlan_prog_tx(unsigned int queue,
 	if ((ieee80211_is_data(fc) ||
 	     ieee80211_is_data_qos(fc))
 	    && ieee80211_has_protected(fc)) {
-		DEBUG_LOG("%s:cipher: %d,icv_len: %d,iv_len: %d,keylen:%d\n",
-			     __func__,
-			     tx_info_first->control.hw_key->cipher,
-			     tx_info_first->control.hw_key->icv_len,
-			     tx_info_first->control.hw_key->iv_len,
-			     tx_info_first->control.hw_key->keylen);
-
-		/* iv_len is always the header ahd
-		 * icv_len is always the trailer
-		 * include only iv_len
+		/* hw_key == NULL: Encrypted in SW (injected frames)
+		 * iv_len = 0: treat as SW encryption.
 		 */
-		hdrlen += tx_info_first->control.hw_key->iv_len;
+		if (tx_info_first->control.hw_key == NULL ||
+		    !tx_info_first->control.hw_key->iv_len) {
+			DEBUG_LOG("%s: hw_key is %s and iv_len: 0\n",
+				  __func__,
+				  tx_info_first->control.hw_key?"valid":"NULL");
+			tx_cmd.encrypt = ENCRYPT_DISABLE;
+		 } else {
+			DEBUG_LOG("%s: cipher: %d, icv: %d, iv: %d, key: %d\n",
+				  __func__,
+				  tx_info_first->control.hw_key->cipher,
+				  tx_info_first->control.hw_key->icv_len,
+				  tx_info_first->control.hw_key->iv_len,
+				  tx_info_first->control.hw_key->keylen);
+			/* iv_len is always the header and icv_len is always
+			 * the trailer include only iv_len
+			 */
+			hdrlen += tx_info_first->control.hw_key->iv_len;
+			tx_cmd.encrypt = ENCRYPT_ENABLE;
+		}
 	}
 
 	if (tx_info_first->flags & IEEE80211_TX_CTL_TX_OFFCHAN)
@@ -1478,7 +1496,7 @@ int uccp420wlan_prog_tx(unsigned int queue,
 	if (ieee80211_is_unicast_robust_mgmt_frame(skb_first) &&
 	    ieee80211_has_protected(fc)) {
 		hdrlen += 8;
-		tx_cmd.force_encrypt = 1;
+		tx_cmd.encrypt = ENCRYPT_ENABLE;
 	}
 
 	/* separate in to up to TSF and From TSF*/
@@ -2037,7 +2055,7 @@ int uccp420wlan_prog_aux_adc_chain(unsigned int chain_id)
 				    UMAC_CMD_AUX_ADC_CHAIN_SEL);
 }
 
-int uccp420wlan_cont_tx(int val)
+int uccp420wlan_prog_cont_tx(int val)
 {
 	struct cmd_cont_tx status;
 

@@ -37,8 +37,8 @@ typedef int (*msg_handler)(void *, unsigned char);
 struct hal_ops_tag {
 	int (*init)(void *);
 	int (*deinit)(void *);
-	int (*start)(struct proc_dir_entry *);
-	int (*stop)(struct proc_dir_entry *);
+	int (*start)(void);
+	int (*stop)(void);
 	void (*register_callback)(msg_handler, unsigned char);
 	void (*send)(void*, unsigned char, unsigned char, void*);
 	int (*init_bufs)(unsigned int, unsigned int, unsigned int,
@@ -50,6 +50,8 @@ struct hal_ops_tag {
 	void (*set_mem_region)(unsigned int);
 	void (*request_mem_regions)(unsigned char **, unsigned char **,
 				    unsigned char **);
+	void (*enable_irq_wake)(void);
+	void (*disable_irq_wake)(void);
 };
 
 extern struct hal_ops_tag hal_ops;

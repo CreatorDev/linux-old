@@ -29,6 +29,7 @@
 #include <linux/skbuff.h>
 #include <linux/slab.h>
 #include <linux/netdevice.h>
+#include <linux/proc_fs.h>
 
 #include <asm/unaligned.h>
 
@@ -954,21 +955,14 @@ static void stats_timer_expiry(unsigned long data)
 #endif
 
 
-int hal_start(struct proc_dir_entry *main_dir_entry)
+int hal_start(void)
 {
-	int err = 0;
-
 #ifdef PERF_PROFILING
 	init_timer(&stats_timer);
 	stats_timer.function = stats_timer_expiry;
 	stats_timer.data = (unsigned long) NULL;
 	mod_timer(&stats_timer, jiffies + msecs_to_jiffies(1000));
 #endif
-	err = hal_proc_init(main_dir_entry);
-
-	if (err)
-		return err;
-
 	hpriv->hal_disabled = 0;
 
 	/* Enable host_int and uccp_int */
@@ -978,10 +972,8 @@ int hal_start(struct proc_dir_entry *main_dir_entry)
 }
 
 
-int hal_stop(struct proc_dir_entry *main_dir_entry)
+int hal_stop(void)
 {
-	/* This is created in hal_start */
-	remove_proc_entry("hal_stats", main_dir_entry);
 
 	/* Disable host_int and uccp_irq */
 	hal_disable_int(NULL);
@@ -1169,6 +1161,13 @@ static int uccp420_pltfr_probe(struct platform_device *pdev)
 	clk_prepare_enable(devm_clk_get(&pdev->dev, "aux_adc"));
 	clk_prepare_enable(devm_clk_get(&pdev->dev, "aux_adc_internal"));
 
+	/* To support suspend/resume (economy mode)
+	 * during probe a wake up capable device will invoke
+	 * the below routine with second parameter("can_wakeup" flag)
+	 * set to 1.
+	 */
+	device_init_wakeup(&pdev->dev, 1);
+
 
 	ret = hal_ops.init(&pdev->dev);
 
@@ -1191,6 +1190,13 @@ static int uccp420_pltfr_remove(struct platform_device *pdev)
 	clk_disable_unprepare(devm_clk_get(&pdev->dev, "sys_event_timer"));
 	clk_disable_unprepare(devm_clk_get(&pdev->dev, "aux_adc"));
 	clk_disable_unprepare(devm_clk_get(&pdev->dev, "aux_adc_internal"));
+
+	/* To support suspend/resume feature (economy mode)
+	 * during remove a wake up capable device will invoke
+	 * the below routine with second parameter("can_wakeup" flag)
+	 * set to 0.
+	 */
+	device_init_wakeup(&pdev->dev, 0);
 
 	return 0;
 }
@@ -1247,6 +1253,9 @@ static int hal_deinit(void *dev)
 
 static int hal_init(void *dev)
 {
+	struct proc_dir_entry *main_dir_entry;
+	int err = 0;
+
 	(void) (dev);
 
 	hpriv->shm_offset =  shm_offset;
@@ -1437,11 +1446,16 @@ static int hal_init(void *dev)
 	spin_lock_init(&timing_lock);
 #endif
 
-	if (_uccp420wlan_80211if_init() < 0) {
+	if (_uccp420wlan_80211if_init(&main_dir_entry) < 0) {
 		pr_err("%s: wlan_init failed\n", hal_name);
 		hal_deinit(NULL);
 		return -ENOMEM;
 	}
+
+	err = hal_proc_init(main_dir_entry);
+
+	if (err)
+		return err;
 
 	hpriv->cmd_cnt = COMMAND_START_MAGIC;
 	hpriv->event_cnt = 0;
@@ -1827,6 +1841,16 @@ void hal_request_mem_regions(unsigned char **gram_addr,
 	*gram_b4_addr = (unsigned char *)hpriv->gram_b4_addr;
 }
 
+void hal_enable_irq_wake(void)
+{
+	enable_irq_wake(hpriv->irq);
+}
+
+void hal_disable_irq_wake(void)
+{
+	disable_irq_wake(hpriv->irq);
+}
+
 
 struct hal_ops_tag hal_ops = {
 	.init = hal_init,
@@ -1842,6 +1866,8 @@ struct hal_ops_tag hal_ops = {
 	.reset_hal_params	= hal_reset_hal_params,
 	.set_mem_region	= hal_set_mem_region,
 	.request_mem_regions	= hal_request_mem_regions,
+	.enable_irq_wake = hal_enable_irq_wake,
+	.disable_irq_wake = hal_disable_irq_wake,
 };
 
 

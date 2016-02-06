@@ -511,7 +511,10 @@ struct cmd_tx_ctrl {
 #define AMPDU_AGGR_DISABLED 0x00000000
 	unsigned char aggregate_mpdu;
 
-	unsigned char force_encrypt;
+#define ENCRYPT_DISABLE 0
+#define ENCRYPT_ENABLE 1
+	unsigned char encrypt;
+
 
 #define MAC_HDR_SIZE 52
 	unsigned int pkt_gram_payload_len;

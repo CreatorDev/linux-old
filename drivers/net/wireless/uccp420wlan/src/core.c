@@ -408,7 +408,7 @@ int uccp420wlan_core_init(struct mac80211_dev *dev, unsigned int ftm)
 
 	UMAC_PRINT("%s-UMAC: Reset (ENABLE)\n", dev->name);
 
-	if (hal_ops.start(dev->umac_proc_dir_entry))
+	if (hal_ops.start())
 		goto lmac_deinit;
 	if (ftm)
 		uccp420wlan_prog_reset(LMAC_ENABLE, LMAC_MODE_FTM);
@@ -436,7 +436,7 @@ int uccp420wlan_core_init(struct mac80211_dev *dev, unsigned int ftm)
 
 	return 0;
 hal_stop:
-	hal_ops.stop(dev->umac_proc_dir_entry);
+	hal_ops.stop();
 lmac_deinit:
 	uccp420wlan_lmac_if_deinit();
 	return -1;
@@ -464,7 +464,7 @@ void uccp420wlan_core_deinit(struct mac80211_dev *dev, unsigned int ftm)
 
 	uccp420_lmac_if_free_outstnding();
 
-	hal_ops.stop(dev->umac_proc_dir_entry);
+	hal_ops.stop();
 	hal_ops.deinit_bufs();
 
 	uccp420wlan_lmac_if_deinit();

@@ -200,6 +200,7 @@ struct wifi_params {
 	unsigned int bt_state;
 	unsigned int antenna_sel;
 	int pkt_gen_val;
+	int init_pkt_gen;
 	int payload_length;
 	int start_prod_mode;
 	int init_prod;
