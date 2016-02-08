@@ -315,7 +315,7 @@ static irqreturn_t pistachio_alarm_handler(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
-static int __init pistachio_rtc_probe(struct platform_device *pdev)
+static int pistachio_rtc_probe(struct platform_device *pdev)
 {
 	struct pistachio_rtc *priv;
 	struct regmap *periph_regs;
