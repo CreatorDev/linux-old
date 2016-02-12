@@ -135,6 +135,8 @@ $(call allow-override,LD,$(CROSS_COMPILE)ld)
 
 PKG_CONFIG = $(CROSS_COMPILE)pkg-config
 
+LD += $(EXTRA_LDFLAGS)
+
 RM      = rm -f
 LN      = ln -f
 MKDIR   = mkdir
