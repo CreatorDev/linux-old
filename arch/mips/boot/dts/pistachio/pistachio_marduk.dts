@@ -261,6 +261,10 @@
 	mac-address = [0123456789AB];
 };
 
+&pin_enet_phy_clk {
+	drive-strength = <2>;
+};
+
 &sdhost {
 	status = "okay";
 	bus-width = <4>;

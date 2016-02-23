@@ -686,7 +686,7 @@
 				slew-rate = <1>;
 				drive-strength = <4>;
 			};
-			enet-phy-clk {
+			pin_enet_phy_clk: enet-phy-clk {
 				pins = "mfio71";
 				function = "eth";
 				slew-rate = <1>;
