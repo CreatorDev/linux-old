@@ -18,7 +18,7 @@
 #include <linux/slab.h>
 #include <linux/mfd/syscon.h>
 
-#include <dt-bindings/reset-controller/pistachio-resets.h>
+#include <dt-bindings/reset/pistachio-resets.h>
 
 #define	PISTACHIO_SOFT_RESET		0
 
@@ -59,12 +59,12 @@ static inline int pistachio_reset_shift(unsigned long id)
 	case PISTACHIO_RESET_USB_PHY_PON:
 		return id + 7;
 	default:
-		return -1;
+		return -EINVAL;
 	}
 }
 
 static int pistachio_reset_assert(struct reset_controller_dev *rcdev,
-			      unsigned long id)
+				  unsigned long id)
 {
 	struct pistachio_reset_data *rd;
 	u32 mask;
@@ -74,15 +74,14 @@ static int pistachio_reset_assert(struct reset_controller_dev *rcdev,
 	shift = pistachio_reset_shift(id);
 	if (shift < 0)
 		return shift;
-	mask = 1UL << shift;
+	mask = BIT(shift);
 
-	regmap_update_bits(rd->periph_regs, PISTACHIO_SOFT_RESET, mask, mask);
-
-	return 0;
+	return regmap_update_bits(rd->periph_regs, PISTACHIO_SOFT_RESET,
+				  mask, mask);
 }
 
 static int pistachio_reset_deassert(struct reset_controller_dev *rcdev,
-				unsigned long id)
+				    unsigned long id)
 {
 	struct pistachio_reset_data *rd;
 	u32 mask;
@@ -92,11 +91,10 @@ static int pistachio_reset_deassert(struct reset_controller_dev *rcdev,
 	shift = pistachio_reset_shift(id);
 	if (shift < 0)
 		return shift;
-	mask = 1UL << shift;
+	mask = BIT(shift);
 
-	regmap_update_bits(rd->periph_regs, PISTACHIO_SOFT_RESET, mask, 0);
-
-	return 0;
+	return regmap_update_bits(rd->periph_regs, PISTACHIO_SOFT_RESET,
+				  mask, 0);
 }
 
 static struct reset_control_ops pistachio_reset_ops = {
@@ -107,7 +105,6 @@ static struct reset_control_ops pistachio_reset_ops = {
 static int pistachio_reset_probe(struct platform_device *pdev)
 {
 	struct pistachio_reset_data *rd;
-	int ret;
 	struct device *dev = &pdev->dev;
 	struct device_node *np = pdev->dev.of_node;
 
@@ -115,7 +112,7 @@ static int pistachio_reset_probe(struct platform_device *pdev)
 	if (!rd)
 		return -ENOMEM;
 
-	rd->periph_regs = syscon_regmap_lookup_by_phandle(np, "img,cr-periph");
+	rd->periph_regs = syscon_node_to_regmap(np->parent);
 	if (IS_ERR(rd->periph_regs))
 		return PTR_ERR(rd->periph_regs);
 
@@ -124,11 +121,7 @@ static int pistachio_reset_probe(struct platform_device *pdev)
 	rd->rcdev.ops = &pistachio_reset_ops;
 	rd->rcdev.of_node = np;
 
-	ret = reset_controller_register(&rd->rcdev);
-	if (ret)
-		return ret;
-
-	return 0;
+	return reset_controller_register(&rd->rcdev);
 }
 
 static int pistachio_reset_remove(struct platform_device *pdev)
@@ -139,7 +132,6 @@ static int pistachio_reset_remove(struct platform_device *pdev)
 
 	return 0;
 }
-
 
 static const struct of_device_id pistachio_reset_dt_ids[] = {
 	 { .compatible = "img,pistachio-reset", },
@@ -152,7 +144,7 @@ static struct platform_driver pistachio_reset_driver = {
 	.remove	= pistachio_reset_remove,
 	.driver = {
 		.name		= "pistachio-reset",
-		.of_match_table	= pistachio_reset_dt_ids,
+		.of_match_table	= of_match_ptr(pistachio_reset_dt_ids),
 	},
 };
 module_platform_driver(pistachio_reset_driver);
