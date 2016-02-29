@@ -17,17 +17,20 @@ Required properties:
 
 - compatible: Contains "img,pistachio-reset"
 
-- img,cr-periph: Contains a phandle to the peripheral control syscon
-                    node which contains the soft reset register
-
 - #reset-cells: Contains 1
 
 Example:
+	cr_periph: clk@18148000 {
+		compatible = "img,pistachio-cr-periph", "syscon", "simple-bus";
+		reg = <0x18148000 0x1000>;
+		clocks = <&clk_periph PERIPH_CLK_SYS>;
+		clock-names = "sys";
+		#clock-cells = <1>;
 
-	pistachio_reset: reset-controller {
-		compatible = "img,pistachio-reset";
-		img,cr-periph = <&cr_periph>;
-		#reset-cells = <1>;
+		pistachio_reset: reset-controller {
+			compatible = "img,pistachio-reset";
+			#reset-cells = <1>;
+		};
 	};
 
 Specifying reset control of devices
