@@ -30,7 +30,7 @@
 static int atu_rate_changed;
 #define ATU_UPDATE_TIMER_INTRVL	1
 #define ATU_MODE_ON_THE_FLY	0x80000000
-#define EVENT_TIMER_RATE_TOLERANCE	100000
+#define EVENT_TIMER_RATE_TOLERANCE	512000
 
 /* Structure holding internal clk managing values. */
 struct atu_clk_maintainer {
