@@ -59,3 +59,4 @@ obj-$(CONFIG_VEXPRESS_SYSCFG)	+= vexpress-syscfg.o
 obj-$(CONFIG_CXL_BASE)		+= cxl/
 obj-$(CONFIG_ATU)		+= atu/
 obj-$(CONFIG_IMG_PDM)           += img-pdm.o
+obj-$(CONFIG_IMG_SCRATCHPAD)	+= img-scratchpad.o
