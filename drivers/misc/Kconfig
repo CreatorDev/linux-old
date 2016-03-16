@@ -545,6 +545,16 @@ config UBOOT_BOOTCOUNT
 	  The U-Boot Bootcount driver allows to access the
 	  bootcounter through sysfs file.
 
+config IMG_SCRATCHPAD
+	tristate "Imagination Technologies scratchpad driver"
+	depends on OF
+	depends on HAS_IOMEM
+	depends on MFD_SYSCON
+	depends on COMMON_CLK
+	depends on MIPS || COMPILE_TEST
+	help
+	  Provide sysfs read/write access to scratchpad registers.
+
 source "drivers/misc/c2port/Kconfig"
 source "drivers/misc/eeprom/Kconfig"
 source "drivers/misc/cb710/Kconfig"
