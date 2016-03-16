@@ -19,6 +19,8 @@
 #include <linux/slab.h>
 #include <linux/of_address.h>
 #include <linux/of_platform.h>
+#include <linux/regmap.h>
+#include <linux/mfd/syscon.h>
 
 #define UBOOT_BOOTCOUNT_MAGIC		0xB001C041 /* magic number value */
 #define UBOOT_BOOTCOUNT_MAGIC_MASK	0xFFFF0000 /* magic, when combined */
@@ -26,23 +28,34 @@
 
 
 struct bootcount_device {
-	void __iomem *reg;
+	struct regmap *regmap;
+	unsigned int regmap_offset;
+};
+
+static const struct regmap_config regmap_config = {
+	.reg_bits = 32,
+	.val_bits = 32,
+	.reg_stride = 4,
 };
 
 static int bootcount_show(struct device *dev,
 				struct device_attribute *attr,
 				char *buf)
 {
-	unsigned long bootcount;
+	int ret;
+	unsigned int bootcount;
 	struct bootcount_device *priv = dev_get_drvdata(dev);
 
-	bootcount = readl(priv->reg);
+	ret = regmap_read(priv->regmap, priv->regmap_offset, &bootcount);
+	if (ret)
+		return ret;
+
 	if ((bootcount & UBOOT_BOOTCOUNT_MAGIC_MASK) !=
 		(UBOOT_BOOTCOUNT_MAGIC & UBOOT_BOOTCOUNT_MAGIC_MASK)) {
 		return -EINVAL;
 	}
 	bootcount &= UBOOT_BOOTCOUNT_COUNT_MASK;
-	return sprintf(buf, "%lu\n", bootcount);
+	return sprintf(buf, "%u\n", bootcount);
 }
 
 static int bootcount_store(struct device *dev,
@@ -60,7 +73,9 @@ static int bootcount_store(struct device *dev,
 
 	value = (UBOOT_BOOTCOUNT_MAGIC & UBOOT_BOOTCOUNT_MAGIC_MASK) |
 		(value & UBOOT_BOOTCOUNT_COUNT_MASK);
-	writel(value, priv->reg);
+	ret = regmap_write(priv->regmap, priv->regmap_offset, value);
+	if (ret)
+		return ret;
 
 	return count;
 }
@@ -69,10 +84,10 @@ static DEVICE_ATTR_RW(bootcount);
 
 static int bootcount_probe(struct platform_device *ofdev)
 {
-	unsigned long magic;
+	unsigned int magic;
 	struct bootcount_device *priv;
 	struct resource *res;
-	int status;
+	int status, ret;
 
 	priv = devm_kzalloc(&ofdev->dev, sizeof(struct bootcount_device), GFP_KERNEL);
 	if (!priv) {
@@ -81,13 +96,42 @@ static int bootcount_probe(struct platform_device *ofdev)
 	}
 
 	res = platform_get_resource(ofdev, IORESOURCE_MEM, 0);
-	priv->reg = devm_ioremap_resource(&ofdev->dev, res);
-	 if (IS_ERR(priv->reg)) {
-		dev_err(&ofdev->dev, "unable to map register\n");
-		return PTR_ERR(priv->reg);
+	if (res) {
+		void __iomem *reg;
+
+		reg = devm_ioremap_resource(&ofdev->dev, res);
+		if (IS_ERR(reg)) {
+			dev_err(&ofdev->dev, "Unable to map register\n");
+			return PTR_ERR(reg);
+		}
+		priv->regmap = devm_regmap_init_mmio(&ofdev->dev, reg,
+						     &regmap_config);
+		if (IS_ERR(priv->regmap)) {
+			dev_err(&ofdev->dev, "Unable to get regmap\n");
+			return PTR_ERR(priv->regmap);
+		}
+
+		priv->regmap_offset = 0;
+	} else {
+		struct of_phandle_args args;
+
+		ret = of_parse_phandle_with_fixed_args(ofdev->dev.of_node,
+						"syscon-reg", 1, 0,
+						&args);
+		if (ret)
+			return ret;
+		priv->regmap = syscon_node_to_regmap(args.np);
+		if (IS_ERR(priv->regmap)) {
+			dev_err(&ofdev->dev, "Unable to get regmap\n");
+			return PTR_ERR(priv->regmap);
+		}
+		priv->regmap_offset = args.args[0];
 	}
 
-	magic = readl(priv->reg);
+	ret = regmap_read(priv->regmap, priv->regmap_offset, &magic);
+	if (ret)
+		return ret;
+
 	if ((magic & UBOOT_BOOTCOUNT_MAGIC_MASK) !=
 	    (UBOOT_BOOTCOUNT_MAGIC & UBOOT_BOOTCOUNT_MAGIC_MASK)) {
 		dev_err(&ofdev->dev, "bad magic\n");
