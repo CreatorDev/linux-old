@@ -25,10 +25,16 @@ Required properties:
 
   - compatible : should be "uboot,bootcount"
   - reg: the address of the bootcounter
+  - syscon-reg: Specify if reg property is not specified, should specify the syscon reg to be used
 
 Example:
 
 bootcount@1c23000 {
 	compatible = "uboot,bootcount";
 	reg = <0x23060 0x1>;
+};
+
+bootcount {
+	compatible = "uboot,bootcount";
+	syscon-reg = <&scratchpad 0x0>;
 };
