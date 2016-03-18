@@ -389,6 +389,11 @@ static inline int dwc2_is_device_mode(struct dwc2_hsotg *hsotg)
 	return (dwc2_readl(hsotg->regs + GINTSTS) & GINTSTS_CURMODE_HOST) == 0;
 }
 
+static inline int dwc2_is_connected(struct dwc2_hsotg *hsotg)
+{
+	 return (readl(hsotg->regs + HPRT0) & HPRT0_CONNSTS) == 1;
+}
+
 /*
  * Reads HPRT0 in preparation to modify. It keeps the WC bits 0 so that if they
  * are read as 1, they won't clear when written back.
