@@ -470,6 +470,11 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
 	if (dwc2->ll_hw_enabled)
 		ret = __dwc2_lowlevel_hw_disable(dwc2);
 
+		/* PHY clocks needs to be active if device is connected */
+		if (dwc2_is_connected(dwc2))
+			return 0;
+
+
 	return ret;
 }
 
