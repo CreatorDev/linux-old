@@ -726,7 +726,7 @@ void pistachio_evt_abort_measurements(struct pistachio_evt *evt)
 }
 EXPORT_SYMBOL_GPL(pistachio_evt_abort_measurements);
 
-static void pistachio_evt_clk_rate_change(struct pistachio_evt *evt)
+void pistachio_evt_clk_rate_change(struct pistachio_evt *evt)
 {
 	u64 tmp;
 	unsigned long flags;
