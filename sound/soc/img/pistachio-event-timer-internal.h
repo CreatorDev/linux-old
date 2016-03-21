@@ -66,4 +66,5 @@ int pistachio_evt_time_to_reg(struct pistachio_evt *evt, u64 time,
 int pistachio_evt_init(struct pistachio_evt *evt);
 void pistachio_evt_deinit(struct pistachio_evt *evt);
 
+void pistachio_evt_clk_rate_change(struct pistachio_evt *evt);
 #endif
