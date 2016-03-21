@@ -52,7 +52,7 @@ static u64 pistachio_evt_get_time_cyc(struct pistachio_evt *evt, u32 *cyc)
 	u64 ret;
 
 	spin_lock_irqsave(&evt->lock, flags);
-	ret = _pistachio_evt_read_ns(evt, cyc);
+	ret = _pistachio_evt_get_time_cyc(evt, cyc);
 	spin_unlock_irqrestore(&evt->lock, flags);
 
 	return ret;
@@ -140,12 +140,12 @@ static int pistachio_evt_clk_notifier_cb(struct notifier_block *nb,
 
 	switch (event) {
 	case PRE_RATE_CHANGE:
-		pistachio_evt_read_ns(evt, NULL);
+		pistachio_evt_get_time_cyc(evt, NULL);
 		return NOTIFY_OK;
 	case POST_RATE_CHANGE:
 		hrtimer_cancel(&evt->poll_timer);
 		pistachio_evt_clk_rate_change(evt);
-		pistachio_evt_read_ns(evt, NULL);
+		pistachio_evt_get_time_cyc(evt, NULL);
 		pistachio_evt_start_poll_timer(evt);
 		return NOTIFY_OK;
 	case ABORT_RATE_CHANGE:
