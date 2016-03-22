@@ -35,16 +35,12 @@
 #define IMG_PRL_OUT_CTL_ME_MASK		BIT(1)
 #define IMG_PRL_OUT_CTL_SRST_MASK	BIT(0)
 
-static const char *const img_prl_out_edge_names[] = { "Rising", "Falling" };
-
 struct img_prl_out {
-	spinlock_t lock;
 	void __iomem *base;
 	struct clk *clk_sys;
 	struct clk *clk_ref;
 	struct snd_dmaengine_dai_dma_data dma_data;
 	struct device *dev;
-	bool active;
 	struct reset_control *rst;
 };
 
@@ -95,72 +91,11 @@ static void img_prl_out_reset(struct img_prl_out *prl)
 	img_prl_out_writel(prl, ctl, IMG_PRL_OUT_CTL);
 }
 
-static int img_prl_out_edge_info(struct snd_kcontrol *kcontrol,
-					struct snd_ctl_elem_info *uinfo)
-{
-	return snd_ctl_enum_info(uinfo, 1, 2, img_prl_out_edge_names);
-}
-
-static int img_prl_out_get_edge(struct snd_kcontrol *kcontrol,
-				  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_dai *cpu_dai = snd_kcontrol_chip(kcontrol);
-	struct img_prl_out *prl = snd_soc_dai_get_drvdata(cpu_dai);
-	u32 reg;
-	unsigned long flags;
-
-	spin_lock_irqsave(&prl->lock, flags);
-	reg = img_prl_out_readl(prl, IMG_PRL_OUT_CTL);
-	ucontrol->value.integer.value[0] = !!(reg & IMG_PRL_OUT_CTL_EDGE_MASK);
-	spin_unlock_irqrestore(&prl->lock, flags);
-
-	return 0;
-}
-
-static int img_prl_out_set_edge(struct snd_kcontrol *kcontrol,
-				  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_dai *cpu_dai = snd_kcontrol_chip(kcontrol);
-	struct img_prl_out *prl = snd_soc_dai_get_drvdata(cpu_dai);
-	unsigned long flags;
-	int ret = 0;
-	u32 reg;
-
-	spin_lock_irqsave(&prl->lock, flags);
-	if (prl->active) {
-		ret = -EBUSY;
-	} else {
-		reg = img_prl_out_readl(prl, IMG_PRL_OUT_CTL);
-		if (ucontrol->value.integer.value[0])
-			reg |= IMG_PRL_OUT_CTL_EDGE_MASK;
-		else
-			reg &= ~IMG_PRL_OUT_CTL_EDGE_MASK;
-		img_prl_out_writel(prl, reg, IMG_PRL_OUT_CTL);
-	}
-	spin_unlock_irqrestore(&prl->lock, flags);
-
-	return ret;
-}
-
-static struct snd_kcontrol_new img_prl_out_controls[] = {
-	{
-		.iface = SNDRV_CTL_ELEM_IFACE_PCM,
-		.name = "Parallel Out Edge Falling",
-		.info = img_prl_out_edge_info,
-		.get = img_prl_out_get_edge,
-		.put = img_prl_out_set_edge
-	}
-};
-
 static int img_prl_out_trigger(struct snd_pcm_substream *substream, int cmd,
 			struct snd_soc_dai *dai)
 {
 	struct img_prl_out *prl = snd_soc_dai_get_drvdata(dai);
-	unsigned long flags;
-	int ret = 0;
 	u32 reg;
-
-	spin_lock_irqsave(&prl->lock, flags);
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -169,21 +104,17 @@ static int img_prl_out_trigger(struct snd_pcm_substream *substream, int cmd,
 		reg = img_prl_out_readl(prl, IMG_PRL_OUT_CTL);
 		reg |= IMG_PRL_OUT_CTL_ME_MASK;
 		img_prl_out_writel(prl, reg, IMG_PRL_OUT_CTL);
-		prl->active = true;
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
 		img_prl_out_reset(prl);
-		prl->active = false;
 		break;
 	default:
-		ret = -EINVAL;
+		return -EINVAL;
 	}
 
-	spin_unlock_irqrestore(&prl->lock, flags);
-
-	return ret;
+	return 0;
 }
 
 static int img_prl_out_hw_params(struct snd_pcm_substream *substream,
@@ -191,8 +122,7 @@ static int img_prl_out_hw_params(struct snd_pcm_substream *substream,
 {
 	struct img_prl_out *prl = snd_soc_dai_get_drvdata(dai);
 	unsigned int rate, channels;
-	u32 reg, reg_set = 0;
-	unsigned long flags;
+	u32 reg, control_set = 0;
 	snd_pcm_format_t format;
 
 	rate = params_rate(params);
@@ -201,7 +131,7 @@ static int img_prl_out_hw_params(struct snd_pcm_substream *substream,
 
 	switch (params_format(params)) {
 	case SNDRV_PCM_FORMAT_S32_LE:
-		reg_set |= IMG_PRL_OUT_CTL_PACKH_MASK;
+		control_set |= IMG_PRL_OUT_CTL_PACKH_MASK;
 		break;
 	case SNDRV_PCM_FORMAT_S24_LE:
 		break;
@@ -214,25 +144,31 @@ static int img_prl_out_hw_params(struct snd_pcm_substream *substream,
 
 	clk_set_rate(prl->clk_ref, rate * 256);
 
-	spin_lock_irqsave(&prl->lock, flags);
 	reg = img_prl_out_readl(prl, IMG_PRL_OUT_CTL);
-	reg = (reg & ~IMG_PRL_OUT_CTL_PACKH_MASK) | reg_set;
+	reg = (reg & ~IMG_PRL_OUT_CTL_PACKH_MASK) | control_set;
 	img_prl_out_writel(prl, reg, IMG_PRL_OUT_CTL);
-	spin_unlock_irqrestore(&prl->lock, flags);
 
 	return 0;
 }
 
-static int img_prl_out_start_at(struct snd_pcm_substream *substream,
-		struct snd_soc_dai *cpu_dai, int clock_type,
-		const struct timespec *ts)
+static int img_prl_out_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
-	struct img_prl_out *prl = snd_soc_dai_get_drvdata(cpu_dai);
-	unsigned long flags;
+	struct img_prl_out *prl = snd_soc_dai_get_drvdata(dai);
+	u32 reg, control_set = 0;
 
-	spin_lock_irqsave(&prl->lock, flags);
-	prl->active = true;
-	spin_unlock_irqrestore(&prl->lock, flags);
+	switch (fmt & SND_SOC_DAIFMT_INV_MASK) {
+	case SND_SOC_DAIFMT_NB_NF:
+		break;
+	case SND_SOC_DAIFMT_NB_IF:
+		control_set |= IMG_PRL_OUT_CTL_EDGE_MASK;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	reg = img_prl_out_readl(prl, IMG_PRL_OUT_CTL);
+	reg = (reg & ~IMG_PRL_OUT_CTL_EDGE_MASK) | control_set;
+	img_prl_out_writel(prl, reg, IMG_PRL_OUT_CTL);
 
 	return 0;
 }
@@ -241,12 +177,8 @@ static int img_prl_out_start_at_abort(struct snd_pcm_substream *substream,
 		struct snd_soc_dai *cpu_dai)
 {
 	struct img_prl_out *prl = snd_soc_dai_get_drvdata(cpu_dai);
-	unsigned long flags;
 
-	spin_lock_irqsave(&prl->lock, flags);
-	prl->active = false;
 	img_prl_out_reset(prl);
-	spin_unlock_irqrestore(&prl->lock, flags);
 
 	return 0;
 }
@@ -254,7 +186,7 @@ static int img_prl_out_start_at_abort(struct snd_pcm_substream *substream,
 static const struct snd_soc_dai_ops img_prl_out_dai_ops = {
 	.trigger = img_prl_out_trigger,
 	.hw_params = img_prl_out_hw_params,
-	.start_at = img_prl_out_start_at,
+	.set_fmt = img_prl_out_set_fmt,
 	.start_at_abort = img_prl_out_start_at_abort
 };
 
@@ -263,9 +195,6 @@ static int img_prl_out_dai_probe(struct snd_soc_dai *dai)
 	struct img_prl_out *prl = snd_soc_dai_get_drvdata(dai);
 
 	snd_soc_dai_init_dma_data(dai, &prl->dma_data, NULL);
-
-	snd_soc_add_dai_controls(dai, img_prl_out_controls,
-			ARRAY_SIZE(img_prl_out_controls));
 
 	return 0;
 }
@@ -291,6 +220,7 @@ static int img_prl_out_probe(struct platform_device *pdev)
 	struct resource *res;
 	void __iomem *base;
 	int ret;
+	struct device *dev = &pdev->dev;
 
 	prl = devm_kzalloc(&pdev->dev, sizeof(*prl), GFP_KERNEL);
 	if (!prl)
@@ -309,17 +239,24 @@ static int img_prl_out_probe(struct platform_device *pdev)
 
 	prl->rst = devm_reset_control_get(&pdev->dev, "rst");
 	if (IS_ERR(prl->rst)) {
-		dev_err(&pdev->dev, "No top level reset found\n");
+		if (PTR_ERR(prl->rst) != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "No top level reset found\n");
 		return PTR_ERR(prl->rst);
 	}
 
 	prl->clk_sys = devm_clk_get(&pdev->dev, "sys");
-	if (IS_ERR(prl->clk_sys))
+	if (IS_ERR(prl->clk_sys)) {
+		if (PTR_ERR(prl->clk_sys) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'sys'\n");
 		return PTR_ERR(prl->clk_sys);
+	}
 
 	prl->clk_ref = devm_clk_get(&pdev->dev, "ref");
-	if (IS_ERR(prl->clk_ref))
+	if (IS_ERR(prl->clk_ref)) {
+		if (PTR_ERR(prl->clk_ref) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'ref'\n");
 		return PTR_ERR(prl->clk_ref);
+	}
 
 	ret = clk_prepare_enable(prl->clk_sys);
 	if (ret)
@@ -334,8 +271,6 @@ static int img_prl_out_probe(struct platform_device *pdev)
 		if (ret)
 			goto err_pm_disable;
 	}
-
-	spin_lock_init(&prl->lock);
 
 	prl->dma_data.addr = res->start + IMG_PRL_OUT_TX_FIFO;
 	prl->dma_data.addr_width = 4;
