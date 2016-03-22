@@ -332,6 +332,7 @@ static int img_spdif_out_probe(struct platform_device *pdev)
 	struct resource *res;
 	void __iomem *base;
 	int ret;
+	struct device *dev = &pdev->dev;
 
 	spdif = devm_kzalloc(&pdev->dev, sizeof(*spdif), GFP_KERNEL);
 	if (!spdif)
@@ -350,17 +351,24 @@ static int img_spdif_out_probe(struct platform_device *pdev)
 
 	spdif->rst = devm_reset_control_get(&pdev->dev, "rst");
 	if (IS_ERR(spdif->rst)) {
-		dev_err(&pdev->dev, "No top level reset found\n");
+		if (PTR_ERR(spdif->rst) != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "No top level reset found\n");
 		return PTR_ERR(spdif->rst);
 	}
 
 	spdif->clk_sys = devm_clk_get(&pdev->dev, "sys");
-	if (IS_ERR(spdif->clk_sys))
+	if (IS_ERR(spdif->clk_sys)) {
+		if (PTR_ERR(spdif->clk_sys) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'sys'\n");
 		return PTR_ERR(spdif->clk_sys);
+	}
 
 	spdif->clk_ref = devm_clk_get(&pdev->dev, "ref");
-	if (IS_ERR(spdif->clk_ref))
+	if (IS_ERR(spdif->clk_ref)) {
+		if (PTR_ERR(spdif->clk_ref) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'ref'\n");
 		return PTR_ERR(spdif->clk_ref);
+	}
 
 	ret = clk_prepare_enable(spdif->clk_sys);
 	if (ret)

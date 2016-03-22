@@ -1,7 +1,7 @@
 /*
  * PCM3168A codec driver header
  *
- * Copyright (C) 2014 Imagination Technologies Ltd.
+ * Copyright (C) 2015 Imagination Technologies Ltd.
  *
  * Author: Damien Horsley <Damien.Horsley@imgtec.com>
  *
@@ -96,16 +96,5 @@ extern void pcm3168a_remove(struct device *dev);
 #define PCM3168A_ADC_VOL_MASTER			0x58
 
 #define PCM3168A_ADC_VOL_CHAN_START		0x59
-
-#define PCM3168A_DOUBLE_STS(xname, reg, shift_left, shift_right, max, invert) \
-{									\
-	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = (xname),		\
-	.info = snd_soc_info_volsw, .get = snd_soc_get_volsw,		\
-	.put = snd_soc_put_volsw,					\
-	.access = SNDRV_CTL_ELEM_ACCESS_READ |				\
-		SNDRV_CTL_ELEM_ACCESS_VOLATILE,				\
-	.private_value = SOC_DOUBLE_VALUE(reg, shift_left, shift_right,	\
-	max, invert, 0)							\
-}
 
 #endif

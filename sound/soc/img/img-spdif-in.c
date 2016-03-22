@@ -699,6 +699,7 @@ static int img_spdif_in_probe(struct platform_device *pdev)
 	int ret;
 	struct reset_control *rst;
 	u32 reg;
+	struct device *dev = &pdev->dev;
 
 	spdif = devm_kzalloc(&pdev->dev, sizeof(*spdif), GFP_KERNEL);
 	if (!spdif)
@@ -715,9 +716,12 @@ static int img_spdif_in_probe(struct platform_device *pdev)
 
 	spdif->base = base;
 
-	spdif->clk_sys = devm_clk_get(&pdev->dev, "sys");
-	if (IS_ERR(spdif->clk_sys))
+	spdif->clk_sys = devm_clk_get(dev, "sys");
+	if (IS_ERR(spdif->clk_sys)) {
+		if (PTR_ERR(spdif->clk_sys) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'sys'\n");
 		return PTR_ERR(spdif->clk_sys);
+	}
 
 	ret = clk_prepare_enable(spdif->clk_sys);
 	if (ret)
@@ -725,8 +729,11 @@ static int img_spdif_in_probe(struct platform_device *pdev)
 
 	rst = devm_reset_control_get(&pdev->dev, "rst");
 	if (IS_ERR(rst)) {
-		dev_dbg(&pdev->dev,
-				"No top level reset found\n");
+		if (PTR_ERR(rst) == -EPROBE_DEFER) {
+			ret = -EPROBE_DEFER;
+			goto err_clk_disable;
+		}
+		dev_dbg(dev, "No top level reset found\n");
 		img_spdif_in_writel(spdif, IMG_SPDIF_IN_SOFT_RESET_MASK,
 				IMG_SPDIF_IN_SOFT_RESET);
 		img_spdif_in_writel(spdif, 0, IMG_SPDIF_IN_SOFT_RESET);
