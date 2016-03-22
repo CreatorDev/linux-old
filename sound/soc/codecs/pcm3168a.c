@@ -1,7 +1,7 @@
 /*
  * PCM3168A codec driver
  *
- * Copyright (C) 2014 Imagination Technologies Ltd.
+ * Copyright (C) 2015 Imagination Technologies Ltd.
  *
  * Author: Damien Horsley <Damien.Horsley@imgtec.com>
  *
@@ -49,8 +49,8 @@ struct pcm3168a_priv {
 	struct regulator_bulk_data supplies[PCM3168A_NUM_SUPPLIES];
 	struct regmap *regmap;
 	struct clk *scki;
-	bool adc_slave_mode;
-	bool dac_slave_mode;
+	bool adc_master_mode;
+	bool dac_master_mode;
 	unsigned long sysclk;
 	unsigned int adc_fmt;
 	unsigned int dac_fmt;
@@ -131,10 +131,10 @@ static const struct snd_kcontrol_new pcm3168a_snd_controls[] = {
 	SOC_DOUBLE("DAC2 Invert Switch", PCM3168A_DAC_INV, 2, 3, 1, 0),
 	SOC_DOUBLE("DAC3 Invert Switch", PCM3168A_DAC_INV, 4, 5, 1, 0),
 	SOC_DOUBLE("DAC4 Invert Switch", PCM3168A_DAC_INV, 6, 7, 1, 0),
-	PCM3168A_DOUBLE_STS("DAC1 Zero Flag", PCM3168A_DAC_ZERO, 0, 1, 1, 0),
-	PCM3168A_DOUBLE_STS("DAC2 Zero Flag", PCM3168A_DAC_ZERO, 2, 3, 1, 0),
-	PCM3168A_DOUBLE_STS("DAC3 Zero Flag", PCM3168A_DAC_ZERO, 4, 5, 1, 0),
-	PCM3168A_DOUBLE_STS("DAC4 Zero Flag", PCM3168A_DAC_ZERO, 6, 7, 1, 0),
+	SOC_DOUBLE_STS("DAC1 Zero Flag", PCM3168A_DAC_ZERO, 0, 1, 1, 0),
+	SOC_DOUBLE_STS("DAC2 Zero Flag", PCM3168A_DAC_ZERO, 2, 3, 1, 0),
+	SOC_DOUBLE_STS("DAC3 Zero Flag", PCM3168A_DAC_ZERO, 4, 5, 1, 0),
+	SOC_DOUBLE_STS("DAC4 Zero Flag", PCM3168A_DAC_ZERO, 6, 7, 1, 0),
 	SOC_ENUM("DAC Volume Control Type", pcm3168a_dac_volume_type),
 	SOC_ENUM("DAC Volume Rate Multiplier", pcm3168a_dac_att_mult),
 	SOC_ENUM("DAC De-Emphasis", pcm3168a_dac_demp),
@@ -174,9 +174,9 @@ static const struct snd_kcontrol_new pcm3168a_snd_controls[] = {
 	SOC_DOUBLE("ADC1 Mute Switch", PCM3168A_ADC_MUTE, 0, 1, 1, 0),
 	SOC_DOUBLE("ADC2 Mute Switch", PCM3168A_ADC_MUTE, 2, 3, 1, 0),
 	SOC_DOUBLE("ADC3 Mute Switch", PCM3168A_ADC_MUTE, 4, 5, 1, 0),
-	PCM3168A_DOUBLE_STS("ADC1 Overflow Flag", PCM3168A_ADC_OV, 0, 1, 1, 0),
-	PCM3168A_DOUBLE_STS("ADC2 Overflow Flag", PCM3168A_ADC_OV, 2, 3, 1, 0),
-	PCM3168A_DOUBLE_STS("ADC3 Overflow Flag", PCM3168A_ADC_OV, 4, 5, 1, 0),
+	SOC_DOUBLE_STS("ADC1 Overflow Flag", PCM3168A_ADC_OV, 0, 1, 1, 0),
+	SOC_DOUBLE_STS("ADC2 Overflow Flag", PCM3168A_ADC_OV, 2, 3, 1, 0),
+	SOC_DOUBLE_STS("ADC3 Overflow Flag", PCM3168A_ADC_OV, 4, 5, 1, 0),
 	SOC_ENUM("ADC Volume Control Type", pcm3168a_adc_volume_type),
 	SOC_ENUM("ADC Volume Rate Multiplier", pcm3168a_adc_att_mult),
 	SOC_ENUM("ADC Overflow Flag Polarity", pcm3168a_adc_ov_pol),
@@ -272,7 +272,7 @@ static unsigned int pcm3168a_scki_ratios[] = {
 
 static int pcm3168a_reset(struct pcm3168a_priv *pcm3168a)
 {
-	int ret = 0;
+	int ret;
 
 	ret = regmap_write(pcm3168a->regmap, PCM3168A_RST_SMODE, 0);
 	if (ret)
@@ -295,37 +295,31 @@ static int pcm3168a_digital_mute(struct snd_soc_dai *dai, int mute)
 	return 0;
 }
 
-static int pcm3168a_set_dai_sysclk(struct snd_soc_dai *codec_dai,
+static int pcm3168a_set_dai_sysclk(struct snd_soc_dai *dai,
 				  int clk_id, unsigned int freq, int dir)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
-	struct pcm3168a_priv *pcm3168a = snd_soc_codec_get_drvdata(codec);
+	struct pcm3168a_priv *pcm3168a = snd_soc_codec_get_drvdata(dai->codec);
+	int ret;
 
 	if (freq > PCM1368A_MAX_SYSCLK)
 		return -EINVAL;
+
+	ret = clk_set_rate(pcm3168a->scki, freq);
+	if (ret)
+		return ret;
 
 	pcm3168a->sysclk = freq;
 
 	return 0;
 }
 
-static int pcm3168a_set_dai_fmt(struct snd_soc_dai *codec_dai,
+static int pcm3168a_set_dai_fmt(struct snd_soc_dai *dai,
 			       unsigned int format, bool dac)
 {
-	struct snd_soc_codec *codec = codec_dai->codec;
+	struct snd_soc_codec *codec = dai->codec;
 	struct pcm3168a_priv *pcm3168a = snd_soc_codec_get_drvdata(codec);
 	u32 fmt, reg, mask, shift;
-	bool slave_mode;
-
-	if (dac) {
-		reg = PCM3168A_DAC_PWR_MST_FMT;
-		mask = PCM3168A_DAC_FMT_MASK;
-		shift = PCM3168A_DAC_FMT_SHIFT;
-	} else {
-		reg = PCM3168A_ADC_MST_FMT;
-		mask = PCM3168A_ADC_FMTAD_MASK;
-		shift = PCM3168A_ADC_FMTAD_SHIFT;
-	}
+	bool master_mode;
 
 	switch (format & SND_SOC_DAIFMT_FORMAT_MASK) {
 	case SND_SOC_DAIFMT_LEFT_J:
@@ -348,26 +342,16 @@ static int pcm3168a_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		return -EINVAL;
 	}
 
-	regmap_update_bits(pcm3168a->regmap, reg, mask, fmt << shift);
-
 	switch (format & SND_SOC_DAIFMT_MASTER_MASK) {
 	case SND_SOC_DAIFMT_CBS_CFS:
-		slave_mode = true;
+		master_mode = false;
 		break;
 	case SND_SOC_DAIFMT_CBM_CFM:
-		slave_mode = false;
+		master_mode = true;
 		break;
 	default:
 		dev_err(codec->dev, "unsupported master/slave mode\n");
 		return -EINVAL;
-	}
-
-	if (dac) {
-		pcm3168a->dac_slave_mode = slave_mode;
-		pcm3168a->dac_fmt = fmt;
-	} else {
-		pcm3168a->adc_slave_mode = slave_mode;
-		pcm3168a->adc_fmt = fmt;
 	}
 
 	switch (format & SND_SOC_DAIFMT_INV_MASK) {
@@ -377,19 +361,35 @@ static int pcm3168a_set_dai_fmt(struct snd_soc_dai *codec_dai,
 		return -EINVAL;
 	}
 
+	if (dac) {
+		reg = PCM3168A_DAC_PWR_MST_FMT;
+		mask = PCM3168A_DAC_FMT_MASK;
+		shift = PCM3168A_DAC_FMT_SHIFT;
+		pcm3168a->dac_master_mode = master_mode;
+		pcm3168a->dac_fmt = fmt;
+	} else {
+		reg = PCM3168A_ADC_MST_FMT;
+		mask = PCM3168A_ADC_FMTAD_MASK;
+		shift = PCM3168A_ADC_FMTAD_SHIFT;
+		pcm3168a->adc_master_mode = master_mode;
+		pcm3168a->adc_fmt = fmt;
+	}
+
+	regmap_update_bits(pcm3168a->regmap, reg, mask, fmt << shift);
+
 	return 0;
 }
 
-static int pcm3168a_set_dai_fmt_dac(struct snd_soc_dai *codec_dai,
+static int pcm3168a_set_dai_fmt_dac(struct snd_soc_dai *dai,
 			       unsigned int format)
 {
-	return pcm3168a_set_dai_fmt(codec_dai, format, true);
+	return pcm3168a_set_dai_fmt(dai, format, true);
 }
 
-static int pcm3168a_set_dai_fmt_adc(struct snd_soc_dai *codec_dai,
+static int pcm3168a_set_dai_fmt_adc(struct snd_soc_dai *dai,
 			       unsigned int format)
 {
-	return pcm3168a_set_dai_fmt(codec_dai, format, false);
+	return pcm3168a_set_dai_fmt(dai, format, false);
 }
 
 static int pcm3168a_hw_params(struct snd_pcm_substream *substream,
@@ -398,10 +398,10 @@ static int pcm3168a_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_codec *codec = dai->codec;
 	struct pcm3168a_priv *pcm3168a = snd_soc_codec_get_drvdata(codec);
-	bool tx, slave_mode;
+	bool tx, master_mode;
 	u32 val, mask, shift, reg;
 	unsigned int rate, channels, fmt, ratio, max_ratio;
-	int i;
+	int i, min_frame_size;
 	snd_pcm_format_t format;
 
 	rate = params_rate(params);
@@ -416,14 +416,14 @@ static int pcm3168a_hw_params(struct snd_pcm_substream *substream,
 		reg = PCM3168A_DAC_PWR_MST_FMT;
 		mask = PCM3168A_DAC_MSDA_MASK;
 		shift = PCM3168A_DAC_MSDA_SHIFT;
-		slave_mode = pcm3168a->dac_slave_mode;
+		master_mode = pcm3168a->dac_master_mode;
 		fmt = pcm3168a->dac_fmt;
 	} else {
 		max_ratio = PCM3168A_NUM_SCKI_RATIOS_ADC;
 		reg = PCM3168A_ADC_MST_FMT;
 		mask = PCM3168A_ADC_MSAD_MASK;
 		shift = PCM3168A_ADC_MSAD_SHIFT;
-		slave_mode = pcm3168a->adc_slave_mode;
+		master_mode = pcm3168a->adc_master_mode;
 		fmt = pcm3168a->adc_fmt;
 	}
 
@@ -437,20 +437,32 @@ static int pcm3168a_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 	}
 
-	if ((!slave_mode || (fmt & PCM3168A_FMT_DSP_MASK)) &&
-			(format == SNDRV_PCM_FORMAT_S24_3LE)) {
-		dev_err(codec->dev, "48-bit frames not supported in master mode or slave mode using DSP(A/B)\n");
+	min_frame_size = params_width(params) * 2;
+	switch (min_frame_size) {
+	case 32:
+		if (master_mode || (fmt != PCM3168A_FMT_RIGHT_J)) {
+			dev_err(codec->dev, "32-bit frames are supported only for slave mode using right justified\n");
+			return -EINVAL;
+		}
+		fmt = PCM3168A_FMT_RIGHT_J_16;
+		break;
+	case 48:
+		if (master_mode || (fmt & PCM3168A_FMT_DSP_MASK)) {
+			dev_err(codec->dev, "48-bit frames not supported in master mode, or slave mode using DSP\n");
+			return -EINVAL;
+		}
+		break;
+	case 64:
+		break;
+	default:
+		dev_err(codec->dev, "unsupported frame size: %d\n", min_frame_size);
 		return -EINVAL;
 	}
 
-	if ((!slave_mode || ((fmt != PCM3168A_FMT_RIGHT_J) &&
-			(fmt != PCM3168A_FMT_LEFT_J))) &&
-			(format == SNDRV_PCM_FORMAT_S16)) {
-		dev_err(codec->dev, "32-bit frames are supported only for slave mode using left/right justified\n");
-		return -EINVAL;
-	}
-
-	val = slave_mode ? 0 : ((i + 1) << shift);
+	if (master_mode)
+		val = ((i + 1) << shift);
+	else
+		val = 0;
 
 	regmap_update_bits(pcm3168a->regmap, reg, mask, val);
 
@@ -460,18 +472,6 @@ static int pcm3168a_hw_params(struct snd_pcm_substream *substream,
 	} else {
 		mask = PCM3168A_ADC_FMTAD_MASK;
 		shift = PCM3168A_ADC_FMTAD_SHIFT;
-	}
-
-	/*
-	 * Justification has no effect for S32 and S16 as the whole frame
-	 * is filled with the samples, but the register field
-	 * must be set to a particular value for correct operation
-	 */
-	if ((fmt == PCM3168A_FMT_RIGHT_J) &&
-			(format == SNDRV_PCM_FORMAT_S32)) {
-		fmt = PCM3168A_FMT_LEFT_J;
-	} else if (format == SNDRV_PCM_FORMAT_S16) {
-		fmt = PCM3168A_FMT_RIGHT_J_16;
 	}
 
 	regmap_update_bits(pcm3168a->regmap, reg, mask, fmt << shift);
@@ -599,6 +599,7 @@ const struct regmap_config pcm3168a_regmap = {
 EXPORT_SYMBOL_GPL(pcm3168a_regmap);
 
 static const struct snd_soc_codec_driver pcm3168a_driver = {
+	.idle_bias_off = true,
 	.controls = pcm3168a_snd_controls,
 	.num_controls = ARRAY_SIZE(pcm3168a_snd_controls),
 	.dapm_widgets = pcm3168a_dapm_widgets,
@@ -620,14 +621,15 @@ int pcm3168a_probe(struct device *dev, struct regmap *regmap)
 
 	pcm3168a->scki = devm_clk_get(dev, "scki");
 	if (IS_ERR(pcm3168a->scki)) {
-		dev_err(dev, "failed to get the clock: %ld\n",
-				PTR_ERR(pcm3168a->scki));
-		return PTR_ERR(pcm3168a->scki);
+		ret = PTR_ERR(pcm3168a->scki);
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "failed to acquire clock 'scki': %d\n", ret);
+		return ret;
 	}
 
 	ret = clk_prepare_enable(pcm3168a->scki);
 	if (ret) {
-		dev_err(dev, "failed to enable mclk: %d\n", ret);
+		dev_err(dev, "Failed to enable mclk: %d\n", ret);
 		return ret;
 	}
 
@@ -639,7 +641,8 @@ int pcm3168a_probe(struct device *dev, struct regmap *regmap)
 	ret = devm_regulator_bulk_get(dev,
 			ARRAY_SIZE(pcm3168a->supplies), pcm3168a->supplies);
 	if (ret) {
-		dev_err(dev, "failed to request supplies: %d\n", ret);
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "failed to request supplies: %d\n", ret);
 		goto err_clk;
 	}
 
@@ -663,16 +666,16 @@ int pcm3168a_probe(struct device *dev, struct regmap *regmap)
 		goto err_regulator;
 	}
 
-	ret = snd_soc_register_codec(dev, &pcm3168a_driver, pcm3168a_dais,
-			ARRAY_SIZE(pcm3168a_dais));
-	if (ret) {
-		dev_err(dev, "failed to register codec:%d\n", ret);
-		goto err_regulator;
-	}
-
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
 	pm_runtime_idle(dev);
+
+	ret = snd_soc_register_codec(dev, &pcm3168a_driver, pcm3168a_dais,
+			ARRAY_SIZE(pcm3168a_dais));
+	if (ret) {
+		dev_err(dev, "failed to register codec: %d\n", ret);
+		goto err_regulator;
+	}
 
 	return 0;
 
@@ -688,8 +691,13 @@ EXPORT_SYMBOL_GPL(pcm3168a_probe);
 
 void pcm3168a_remove(struct device *dev)
 {
+	struct pcm3168a_priv *pcm3168a = dev_get_drvdata(dev);
+
 	snd_soc_unregister_codec(dev);
 	pm_runtime_disable(dev);
+	regulator_bulk_disable(ARRAY_SIZE(pcm3168a->supplies),
+				pcm3168a->supplies);
+	clk_disable_unprepare(pcm3168a->scki);
 }
 EXPORT_SYMBOL_GPL(pcm3168a_remove);
 

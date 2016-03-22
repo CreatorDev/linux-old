@@ -115,37 +115,38 @@ static inline u32 img_i2s_out_ch_readl(struct img_i2s_out *i2s, u32 chan,
 	return readl(i2s->channel_base + (chan * IMG_I2S_OUT_CH_STRIDE) + reg);
 }
 
-static inline u32 img_i2s_out_ch_disable(struct img_i2s_out *i2s, u32 chan)
+static inline void img_i2s_out_ch_disable(struct img_i2s_out *i2s, u32 chan)
 {
 	u32 reg;
 
 	reg = img_i2s_out_ch_readl(i2s, chan, IMG_I2S_OUT_CH_CTL);
 	reg &= ~IMG_I2S_OUT_CHAN_CTL_ME_MASK;
 	img_i2s_out_ch_writel(i2s, chan, reg, IMG_I2S_OUT_CH_CTL);
-
-	return reg;
 }
 
-static inline void img_i2s_out_ch_enable(struct img_i2s_out *i2s, u32 chan,
-					u32 reg)
+static inline void img_i2s_out_ch_enable(struct img_i2s_out *i2s, u32 chan)
 {
+	u32 reg;
+
+	reg = img_i2s_out_ch_readl(i2s, chan, IMG_I2S_OUT_CH_CTL);
 	reg |= IMG_I2S_OUT_CHAN_CTL_ME_MASK;
 	img_i2s_out_ch_writel(i2s, chan, reg, IMG_I2S_OUT_CH_CTL);
 }
 
-static inline u32 img_i2s_out_disable(struct img_i2s_out *i2s)
+static inline void img_i2s_out_disable(struct img_i2s_out *i2s)
 {
 	u32 reg;
 
 	reg = img_i2s_out_readl(i2s, IMG_I2S_OUT_CTL);
 	reg &= ~IMG_I2S_OUT_CTL_ME_MASK;
 	img_i2s_out_writel(i2s, reg, IMG_I2S_OUT_CTL);
-
-	return reg;
 }
 
-static inline void img_i2s_out_enable(struct img_i2s_out *i2s, u32 reg)
+static inline void img_i2s_out_enable(struct img_i2s_out *i2s)
 {
+	u32 reg;
+
+	reg = img_i2s_out_readl(i2s, IMG_I2S_OUT_CTL);
 	reg |= IMG_I2S_OUT_CTL_ME_MASK;
 	img_i2s_out_writel(i2s, reg, IMG_I2S_OUT_CTL);
 }
@@ -172,10 +173,10 @@ static void img_i2s_out_reset(struct img_i2s_out *i2s)
 		img_i2s_out_ch_writel(i2s, i, chan_ctl, IMG_I2S_OUT_CH_CTL);
 
 	for (i = 0; i < i2s->active_channels; i++)
-		img_i2s_out_ch_enable(i2s, i, chan_ctl);
+		img_i2s_out_ch_enable(i2s, i);
 
 	img_i2s_out_writel(i2s, core_ctl, IMG_I2S_OUT_CTL);
-	img_i2s_out_enable(i2s, core_ctl);
+	img_i2s_out_enable(i2s);
 }
 
 static int img_i2s_out_trigger(struct snd_pcm_substream *substream, int cmd,
@@ -213,7 +214,7 @@ static int img_i2s_out_hw_params(struct snd_pcm_substream *substream,
 	unsigned int channels, i2s_channels;
 	long pre_div_a, pre_div_b, diff_a, diff_b, rate, clk_rate;
 	int i;
-	u32 reg, control_reg, control_mask, control_set = 0;
+	u32 reg, control_mask, control_set = 0;
 	snd_pcm_format_t format;
 
 	rate = params_rate(params);
@@ -225,8 +226,8 @@ static int img_i2s_out_hw_params(struct snd_pcm_substream *substream,
 		return -EINVAL;
 
 	if ((channels < 2) ||
-			(channels > (i2s->max_i2s_chan * 2)) ||
-			(channels % 2))
+	    (channels > (i2s->max_i2s_chan * 2)) ||
+	    (channels % 2))
 		return -EINVAL;
 
 	pre_div_a = clk_round_rate(i2s->clk_ref, rate * 256);
@@ -258,26 +259,26 @@ static int img_i2s_out_hw_params(struct snd_pcm_substream *substream,
 	if (diff_a > diff_b)
 		control_set |= IMG_I2S_OUT_CTL_CLK_MASK;
 
-	control_set |= (((i2s_channels - 1) <<
-			IMG_I2S_OUT_CTL_ACTIVE_CHAN_SHIFT) &
-			IMG_I2S_OUT_CTL_ACTIVE_CHAN_MASK);
+	control_set |= ((i2s_channels - 1) <<
+		       IMG_I2S_OUT_CTL_ACTIVE_CHAN_SHIFT) &
+		       IMG_I2S_OUT_CTL_ACTIVE_CHAN_MASK;
 
-	control_mask = (u32)(~IMG_I2S_OUT_CTL_CLK_MASK &
-			~IMG_I2S_OUT_CTL_ACTIVE_CHAN_MASK);
+	control_mask = IMG_I2S_OUT_CTL_CLK_MASK |
+		       IMG_I2S_OUT_CTL_ACTIVE_CHAN_MASK;
 
-	control_reg = img_i2s_out_disable(i2s);
-	control_reg = (control_reg & control_mask) | control_set;
-	img_i2s_out_writel(i2s, control_reg, IMG_I2S_OUT_CTL);
+	img_i2s_out_disable(i2s);
 
-	for (i = 0; i < i2s_channels; i++) {
-		reg = img_i2s_out_ch_readl(i2s, i, IMG_I2S_OUT_CH_CTL);
-		img_i2s_out_ch_enable(i2s, i, reg);
-	}
+	reg = img_i2s_out_readl(i2s, IMG_I2S_OUT_CTL);
+	reg = (reg & ~control_mask) | control_set;
+	img_i2s_out_writel(i2s, reg, IMG_I2S_OUT_CTL);
+
+	for (i = 0; i < i2s_channels; i++)
+		img_i2s_out_ch_enable(i2s, i);
 
 	for (; i < i2s->max_i2s_chan; i++)
 		img_i2s_out_ch_disable(i2s, i);
 
-	img_i2s_out_enable(i2s, control_reg);
+	img_i2s_out_enable(i2s);
 
 	i2s->active_channels = i2s_channels;
 
@@ -287,10 +288,10 @@ static int img_i2s_out_hw_params(struct snd_pcm_substream *substream,
 static int img_i2s_out_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 {
 	struct img_i2s_out *i2s = snd_soc_dai_get_drvdata(dai);
-	int i, ret = 0;
+	int i;
 	bool force_clk_active;
 	u32 chan_control_mask, control_mask, chan_control_set = 0;
-	u32 reg = 0, control_reg, control_set = 0;
+	u32 reg = 0, control_set = 0;
 
 	force_clk_active = ((fmt & SND_SOC_DAIFMT_CLOCK_MASK) ==
 			SND_SOC_DAIFMT_CONT);
@@ -337,33 +338,37 @@ static int img_i2s_out_set_fmt(struct snd_soc_dai *dai, unsigned int fmt)
 		return -EINVAL;
 	}
 
-	control_mask = (u32)(~IMG_I2S_OUT_CTL_CLK_EN_MASK &
-		~IMG_I2S_OUT_CTL_MASTER_MASK &
-		~IMG_I2S_OUT_CTL_BCLK_POL_MASK &
-		~IMG_I2S_OUT_CTL_FRM_CLK_POL_MASK &
-		~IMG_I2S_OUT_CTL_EXT_EN_CLK_MASK);
+	control_mask = IMG_I2S_OUT_CTL_CLK_EN_MASK |
+		       IMG_I2S_OUT_CTL_MASTER_MASK |
+		       IMG_I2S_OUT_CTL_BCLK_POL_MASK |
+		       IMG_I2S_OUT_CTL_FRM_CLK_POL_MASK |
+			   IMG_I2S_OUT_CTL_EXT_EN_CLK_MASK;
 
-	chan_control_mask = (u32)~IMG_I2S_OUT_CHAN_CTL_CLKT_MASK;
+	chan_control_mask = IMG_I2S_OUT_CHAN_CTL_CLKT_MASK;
 
-	control_reg = img_i2s_out_disable(i2s);
-	control_reg = (control_reg & control_mask) | control_set;
-	img_i2s_out_writel(i2s, control_reg, IMG_I2S_OUT_CTL);
+	img_i2s_out_disable(i2s);
 
-	for (i = 0; i < i2s->active_channels; i++) {
-		reg = img_i2s_out_ch_disable(i2s, i);
-		reg = (reg & chan_control_mask) | chan_control_set;
+	reg = img_i2s_out_readl(i2s, IMG_I2S_OUT_CTL);
+	reg = (reg & ~control_mask) | control_set;
+	img_i2s_out_writel(i2s, reg, IMG_I2S_OUT_CTL);
+
+	for (i = 0; i < i2s->active_channels; i++)
+		img_i2s_out_ch_disable(i2s, i);
+
+	for (i = 0; i < i2s->max_i2s_chan; i++) {
+		reg = img_i2s_out_ch_readl(i2s, i, IMG_I2S_OUT_CH_CTL);
+		reg = (reg & ~chan_control_mask) | chan_control_set;
 		img_i2s_out_ch_writel(i2s, i, reg, IMG_I2S_OUT_CH_CTL);
-		img_i2s_out_ch_enable(i2s, i, reg);
 	}
 
-	for (; i < i2s->max_i2s_chan; i++)
-		img_i2s_out_ch_writel(i2s, i, reg, IMG_I2S_OUT_CH_CTL);
+	for (i = 0; i < i2s->active_channels; i++)
+		img_i2s_out_ch_enable(i2s, i);
 
-	img_i2s_out_enable(i2s, control_reg);
+	img_i2s_out_enable(i2s);
 
 	i2s->force_clk_active = force_clk_active;
 
-	return ret;
+	return 0;
 }
 
 static int img_i2s_out_start_at(struct snd_pcm_substream *substream,
@@ -446,6 +451,7 @@ static int img_i2s_out_probe(struct platform_device *pdev)
 	int i, ret;
 	unsigned int max_i2s_chan_pow_2;
 	u32 reg;
+	struct device *dev = &pdev->dev;
 
 	i2s = devm_kzalloc(&pdev->dev, sizeof(*i2s), GFP_KERNEL);
 	if (!i2s)
@@ -474,17 +480,24 @@ static int img_i2s_out_probe(struct platform_device *pdev)
 
 	i2s->rst = devm_reset_control_get(&pdev->dev, "rst");
 	if (IS_ERR(i2s->rst)) {
-		dev_err(&pdev->dev, "No top level reset found\n");
+		if (PTR_ERR(i2s->rst) != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "No top level reset found\n");
 		return PTR_ERR(i2s->rst);
 	}
 
 	i2s->clk_sys = devm_clk_get(&pdev->dev, "sys");
-	if (IS_ERR(i2s->clk_sys))
+	if (IS_ERR(i2s->clk_sys)) {
+		if (PTR_ERR(i2s->clk_sys) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'sys'\n");
 		return PTR_ERR(i2s->clk_sys);
+	}
 
 	i2s->clk_ref = devm_clk_get(&pdev->dev, "ref");
-	if (IS_ERR(i2s->clk_ref))
+	if (IS_ERR(i2s->clk_ref)) {
+		if (PTR_ERR(i2s->clk_ref) != -EPROBE_DEFER)
+			dev_err(dev, "Failed to acquire clock 'ref'\n");
 		return PTR_ERR(i2s->clk_ref);
+	}
 
 	ret = clk_prepare_enable(i2s->clk_sys);
 	if (ret)
