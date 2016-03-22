@@ -12,108 +12,45 @@
 
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/pm_runtime.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
-#include <linux/mfd/syscon.h>
 
 #include <sound/pcm_params.h>
 #include <sound/soc.h>
 
-#define CR_AUDIO_DAC_CTRL		0x40
-#define CR_AUDIO_DAC_CTRL_MUTE_MASK	0x4
-#define CR_AUDIO_DAC_CTRL_PWR_SEL_MASK	0x2
-#define CR_AUDIO_DAC_CTRL_PWRDN_MASK	0x1
+#define PISTACHIO_INTERNAL_DAC_CTRL			0x40
+#define PISTACHIO_INTERNAL_DAC_CTRL_PWR_SEL_MASK	0x2
+#define PISTACHIO_INTERNAL_DAC_CTRL_PWRDN_MASK		0x1
 
-#define CR_AUDIO_DAC_GTI_CTRL			0x48
-#define CR_AUDIO_DAC_GTI_CTRL_ADDR_SHIFT	0
-#define CR_AUDIO_DAC_GTI_CTRL_ADDR_MASK		0xFFF
-#define CR_AUDIO_DAC_GTI_CTRL_WE_MASK		0x1000
-#define CR_AUDIO_DAC_GTI_CTRL_WDATA_SHIFT	13
-#define CR_AUDIO_DAC_GTI_CTRL_WDATA_MASK	0x1FE000
+#define PISTACHIO_INTERNAL_DAC_SRST			0x44
+#define PISTACHIO_INTERNAL_DAC_SRST_MASK		0x1
 
-#define	AUDIO_DAC_INTERNAL_REG_PWR		0x1
+#define PISTACHIO_INTERNAL_DAC_GTI_CTRL			0x48
+#define PISTACHIO_INTERNAL_DAC_GTI_CTRL_ADDR_SHIFT	0
+#define PISTACHIO_INTERNAL_DAC_GTI_CTRL_ADDR_MASK	0xFFF
+#define PISTACHIO_INTERNAL_DAC_GTI_CTRL_WE_MASK		0x1000
+#define PISTACHIO_INTERNAL_DAC_GTI_CTRL_WDATA_SHIFT	13
+#define PISTACHIO_INTERNAL_DAC_GTI_CTRL_WDATA_MASK	0x1FE000
+
+#define PISTACHIO_INTERNAL_DAC_PWR			0x1
+#define PISTACHIO_INTERNAL_DAC_PWR_MASK			0x1
 
 #define PISTACHIO_INTERNAL_DAC_FORMATS (SNDRV_PCM_FMTBIT_S24_LE |  \
 					SNDRV_PCM_FMTBIT_S32_LE)
 
 /* codec private data */
 struct pistachio_internal_dac {
-	spinlock_t lock;
 	struct regmap *regmap;
-
-	/* The mute state as set by alsa using the digital_mute callback */
-	bool alsa_mute_state;
-	/* The mute state as set by the userspace mute control */
-	bool control_mute_state;
-	/* The actual mute state is equal to an OR of the above */
+	struct regulator *supply;
+	bool mute;
 };
-
-static int pistachio_internal_dac_get_mute(struct snd_kcontrol *kcontrol,
-				  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct pistachio_internal_dac *dac = snd_soc_codec_get_drvdata(codec);
-
-	ucontrol->value.integer.value[0] = dac->control_mute_state;
-
-	return 0;
-}
-
-static void pistachio_internal_dac_mute(struct pistachio_internal_dac *dac)
-{
-	u32 reg;
-
-	if (dac->control_mute_state || dac->alsa_mute_state)
-		reg = CR_AUDIO_DAC_CTRL_MUTE_MASK;
-	else
-		reg = 0;
-
-	regmap_update_bits(dac->regmap, CR_AUDIO_DAC_CTRL,
-			CR_AUDIO_DAC_CTRL_MUTE_MASK, reg);
-}
-
-static int pistachio_internal_dac_set_mute(struct snd_kcontrol *kcontrol,
-				  struct snd_ctl_elem_value *ucontrol)
-{
-	struct snd_soc_codec *codec = snd_soc_kcontrol_codec(kcontrol);
-	struct pistachio_internal_dac *dac = snd_soc_codec_get_drvdata(codec);
-	unsigned long flags;
-
-	spin_lock_irqsave(&dac->lock, flags);
-	dac->control_mute_state = ucontrol->value.integer.value[0];
-	pistachio_internal_dac_mute(dac);
-	spin_unlock_irqrestore(&dac->lock, flags);
-
-	return 0;
-}
 
 static const struct snd_kcontrol_new pistachio_internal_dac_snd_controls[] = {
-	{
-		.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
-		.iface = SNDRV_CTL_ELEM_IFACE_PCM,
-		.name = "Mute Switch",
-		.info = snd_ctl_boolean_mono_info,
-		.get = pistachio_internal_dac_get_mute,
-		.put = pistachio_internal_dac_set_mute,
-	}
+	SOC_SINGLE("Playback Switch", PISTACHIO_INTERNAL_DAC_CTRL, 2, 1, 1)
 };
-
-static int pistachio_internal_dac_digital_mute(struct snd_soc_dai *dai,
-						int mute)
-{
-	struct snd_soc_codec *codec = dai->codec;
-	struct pistachio_internal_dac *dac = snd_soc_codec_get_drvdata(codec);
-	unsigned long flags;
-
-	spin_lock_irqsave(&dac->lock, flags);
-	dac->alsa_mute_state = mute;
-	pistachio_internal_dac_mute(dac);
-	spin_unlock_irqrestore(&dac->lock, flags);
-
-	return 0;
-}
 
 static const struct snd_soc_dapm_widget pistachio_internal_dac_widgets[] = {
 	SND_SOC_DAPM_DAC("DAC", "Playback", SND_SOC_NOPM, 0, 0),
@@ -129,46 +66,48 @@ static const struct snd_soc_dapm_route pistachio_internal_dac_routes[] = {
 static void pistachio_internal_dac_reg_writel(struct regmap *top_regs,
 						u32 val, u32 reg)
 {
-	regmap_update_bits(top_regs, CR_AUDIO_DAC_GTI_CTRL,
-			CR_AUDIO_DAC_GTI_CTRL_ADDR_MASK,
-			reg << CR_AUDIO_DAC_GTI_CTRL_ADDR_SHIFT);
+	regmap_update_bits(top_regs, PISTACHIO_INTERNAL_DAC_GTI_CTRL,
+			PISTACHIO_INTERNAL_DAC_GTI_CTRL_ADDR_MASK,
+			reg << PISTACHIO_INTERNAL_DAC_GTI_CTRL_ADDR_SHIFT);
 
-	regmap_update_bits(top_regs, CR_AUDIO_DAC_GTI_CTRL,
-			CR_AUDIO_DAC_GTI_CTRL_WDATA_MASK,
-			val << CR_AUDIO_DAC_GTI_CTRL_WDATA_SHIFT);
+	regmap_update_bits(top_regs, PISTACHIO_INTERNAL_DAC_GTI_CTRL,
+			PISTACHIO_INTERNAL_DAC_GTI_CTRL_WDATA_MASK,
+			val << PISTACHIO_INTERNAL_DAC_GTI_CTRL_WDATA_SHIFT);
 
-	regmap_update_bits(top_regs, CR_AUDIO_DAC_GTI_CTRL,
-			CR_AUDIO_DAC_GTI_CTRL_WE_MASK,
-			CR_AUDIO_DAC_GTI_CTRL_WE_MASK);
+	regmap_update_bits(top_regs, PISTACHIO_INTERNAL_DAC_GTI_CTRL,
+			PISTACHIO_INTERNAL_DAC_GTI_CTRL_WE_MASK,
+			PISTACHIO_INTERNAL_DAC_GTI_CTRL_WE_MASK);
 
-	regmap_update_bits(top_regs, CR_AUDIO_DAC_GTI_CTRL,
-			CR_AUDIO_DAC_GTI_CTRL_WE_MASK, 0);
+	regmap_update_bits(top_regs, PISTACHIO_INTERNAL_DAC_GTI_CTRL,
+			PISTACHIO_INTERNAL_DAC_GTI_CTRL_WE_MASK, 0);
 }
 
 static void pistachio_internal_dac_pwr_off(struct pistachio_internal_dac *dac)
 {
-	regmap_update_bits(dac->regmap, CR_AUDIO_DAC_CTRL,
-		CR_AUDIO_DAC_CTRL_PWRDN_MASK,
-		CR_AUDIO_DAC_CTRL_PWRDN_MASK);
+	regmap_update_bits(dac->regmap, PISTACHIO_INTERNAL_DAC_CTRL,
+		PISTACHIO_INTERNAL_DAC_CTRL_PWRDN_MASK,
+		PISTACHIO_INTERNAL_DAC_CTRL_PWRDN_MASK);
 
 	pistachio_internal_dac_reg_writel(dac->regmap, 0,
-					AUDIO_DAC_INTERNAL_REG_PWR);
-
-	msleep(10);
+					PISTACHIO_INTERNAL_DAC_PWR);
 }
 
 static void pistachio_internal_dac_pwr_on(struct pistachio_internal_dac *dac)
 {
-	pistachio_internal_dac_reg_writel(dac->regmap, 1,
-					AUDIO_DAC_INTERNAL_REG_PWR);
+	regmap_update_bits(dac->regmap, PISTACHIO_INTERNAL_DAC_SRST,
+			PISTACHIO_INTERNAL_DAC_SRST_MASK,
+			PISTACHIO_INTERNAL_DAC_SRST_MASK);
 
-	regmap_update_bits(dac->regmap, CR_AUDIO_DAC_CTRL,
-			CR_AUDIO_DAC_CTRL_PWRDN_MASK, 0);
+	regmap_update_bits(dac->regmap, PISTACHIO_INTERNAL_DAC_SRST,
+			PISTACHIO_INTERNAL_DAC_SRST_MASK, 0);
+
+	pistachio_internal_dac_reg_writel(dac->regmap,
+					PISTACHIO_INTERNAL_DAC_PWR_MASK,
+					PISTACHIO_INTERNAL_DAC_PWR);
+
+	regmap_update_bits(dac->regmap, PISTACHIO_INTERNAL_DAC_CTRL,
+			PISTACHIO_INTERNAL_DAC_CTRL_PWRDN_MASK, 0);
 }
-
-static const struct snd_soc_dai_ops pistachio_internal_dac_dac_dai_ops = {
-	.digital_mute	= pistachio_internal_dac_digital_mute,
-};
 
 static struct snd_soc_dai_driver pistachio_internal_dac_dais[] = {
 	{
@@ -179,12 +118,22 @@ static struct snd_soc_dai_driver pistachio_internal_dac_dais[] = {
 			.channels_max = 2,
 			.rates = SNDRV_PCM_RATE_8000_48000,
 			.formats = PISTACHIO_INTERNAL_DAC_FORMATS,
-		},
-		.ops = &pistachio_internal_dac_dac_dai_ops,
+		}
 	},
 };
 
+static int pistachio_internal_dac_codec_probe(struct snd_soc_codec *codec)
+{
+	struct pistachio_internal_dac *dac = snd_soc_codec_get_drvdata(codec);
+
+	snd_soc_codec_init_regmap(codec, dac->regmap);
+
+	return 0;
+}
+
 static const struct snd_soc_codec_driver pistachio_internal_dac_driver = {
+	.probe = pistachio_internal_dac_codec_probe,
+	.idle_bias_off = true,
 	.controls = pistachio_internal_dac_snd_controls,
 	.num_controls = ARRAY_SIZE(pistachio_internal_dac_snd_controls),
 	.dapm_widgets = pistachio_internal_dac_widgets,
@@ -196,16 +145,14 @@ static const struct snd_soc_codec_driver pistachio_internal_dac_driver = {
 static int pistachio_internal_dac_probe(struct platform_device *pdev)
 {
 	struct pistachio_internal_dac *dac;
-	int ret;
+	int ret, voltage;
 	struct device *dev = &pdev->dev;
+	u32 reg;
 
-	dac = devm_kzalloc(dev,
-		sizeof(*dac), GFP_KERNEL);
+	dac = devm_kzalloc(dev, sizeof(*dac), GFP_KERNEL);
 
-	if (dac == NULL)
+	if (!dac)
 		return -ENOMEM;
-
-	spin_lock_init(&dac->lock);
 
 	platform_set_drvdata(pdev, dac);
 
@@ -214,28 +161,72 @@ static int pistachio_internal_dac_probe(struct platform_device *pdev)
 	if (IS_ERR(dac->regmap))
 		return PTR_ERR(dac->regmap);
 
-	pistachio_internal_dac_pwr_off(dac);
-	pistachio_internal_dac_pwr_on(dac);
-
-	ret = snd_soc_register_codec(dev, &pistachio_internal_dac_driver,
-			pistachio_internal_dac_dais,
-			ARRAY_SIZE(pistachio_internal_dac_dais));
-	if (ret) {
-		dev_err(dev, "failed to register codec:%d\n", ret);
+	dac->supply = devm_regulator_get(dev, "VDD");
+	if (IS_ERR(dac->supply)) {
+		ret = PTR_ERR(dac->supply);
+		if (ret != -EPROBE_DEFER)
+			dev_err(dev, "failed to acquire supply 'VDD-supply': %d\n", ret);
 		return ret;
 	}
+
+	ret = regulator_enable(dac->supply);
+	if (ret) {
+		dev_err(dev, "failed to enable supply: %d\n", ret);
+		return ret;
+	}
+
+	voltage = regulator_get_voltage(dac->supply);
+
+	switch (voltage) {
+	case 1800000:
+		reg = 0;
+		break;
+	case 3300000:
+		reg = PISTACHIO_INTERNAL_DAC_CTRL_PWR_SEL_MASK;
+		break;
+	default:
+		dev_err(dev, "invalid voltage: %d\n", voltage);
+		ret = -EINVAL;
+		goto err_regulator;
+	}
+
+	regmap_update_bits(dac->regmap, PISTACHIO_INTERNAL_DAC_CTRL,
+			PISTACHIO_INTERNAL_DAC_CTRL_PWR_SEL_MASK, reg);
+
+	pistachio_internal_dac_pwr_off(dac);
+	pistachio_internal_dac_pwr_on(dac);
 
 	pm_runtime_set_active(dev);
 	pm_runtime_enable(dev);
 	pm_runtime_idle(dev);
 
+	ret = snd_soc_register_codec(dev, &pistachio_internal_dac_driver,
+			pistachio_internal_dac_dais,
+			ARRAY_SIZE(pistachio_internal_dac_dais));
+	if (ret) {
+		dev_err(dev, "failed to register codec: %d\n", ret);
+		goto err_pwr;
+	}
+
 	return 0;
+
+err_pwr:
+	pm_runtime_disable(&pdev->dev);
+	pistachio_internal_dac_pwr_off(dac);
+err_regulator:
+	regulator_disable(dac->supply);
+
+	return ret;
 }
 
 static int pistachio_internal_dac_remove(struct platform_device *pdev)
 {
+	struct pistachio_internal_dac *dac = dev_get_drvdata(&pdev->dev);
+
 	snd_soc_unregister_codec(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+	pistachio_internal_dac_pwr_off(dac);
+	regulator_disable(dac->supply);
 
 	return 0;
 }
@@ -244,6 +235,13 @@ static int pistachio_internal_dac_remove(struct platform_device *pdev)
 static int pistachio_internal_dac_rt_resume(struct device *dev)
 {
 	struct pistachio_internal_dac *dac = dev_get_drvdata(dev);
+	int ret;
+
+	ret = regulator_enable(dac->supply);
+	if (ret) {
+		dev_err(dev, "failed to enable supply: %d\n", ret);
+		return ret;
+	}
 
 	pistachio_internal_dac_pwr_on(dac);
 
@@ -255,6 +253,8 @@ static int pistachio_internal_dac_rt_suspend(struct device *dev)
 	struct pistachio_internal_dac *dac = dev_get_drvdata(dev);
 
 	pistachio_internal_dac_pwr_off(dac);
+
+	regulator_disable(dac->supply);
 
 	return 0;
 }
