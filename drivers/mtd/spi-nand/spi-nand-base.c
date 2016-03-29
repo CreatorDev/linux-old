@@ -206,6 +206,12 @@ static int spi_nand_write(struct spi_nand *snand)
 {
 	int ret;
 
+	/* Enable quad mode */
+	ret = spi_nand_enable_quad(snand);
+	if (ret) {
+		dev_err(snand->dev, "error %d enabling quad mode\n", ret);
+		return ret;
+	}
 	/* Store the page to cache */
 	ret = snand->store_cache(snand, 0, snand->buf_size, snand->data_buf);
 	if (ret < 0) {

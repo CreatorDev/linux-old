@@ -161,6 +161,7 @@ struct spi_nand_device_cmd {
 	u32 n_rx;
 	u8 *rx_buf;
 	u8 rx_nbits;
+	u8 tx_nbits;
 };
 
 struct spi_nand_device {
@@ -192,12 +193,14 @@ static int spi_nand_send_command(struct spi_device *spi,
 	/* Command and address */
 	x[0].len = cmd->n_cmd;
 	x[0].tx_buf = cmd->cmd;
+	x[0].tx_nbits = cmd->tx_nbits;
 	spi_message_add_tail(&x[0], &message);
 
 	/* Data to be transmitted */
 	if (cmd->n_tx) {
 		x[1].len = cmd->n_tx;
 		x[1].tx_buf = cmd->tx_buf;
+		x[1].tx_nbits = cmd->tx_nbits;
 		spi_message_add_tail(&x[1], &message);
 	}
 
@@ -312,14 +315,17 @@ static int spi_nand_device_store_cache(struct spi_nand *snand,
 {
 	struct spi_nand_device *snand_dev = snand->priv;
 	struct spi_nand_device_cmd *cmd = &snand_dev->cmd;
+	struct spi_device *spi = snand_dev->spi;
 
 	memset(cmd, 0, sizeof(struct spi_nand_device_cmd));
 	cmd->n_cmd = 3;
-	cmd->cmd[0] = SPI_NAND_PROGRAM_LOAD;
+	cmd->cmd[0] = spi->mode & SPI_TX_QUAD ? SPI_NAND_PROGRAM_LOAD4 :
+			SPI_NAND_PROGRAM_LOAD;
 	cmd->cmd[1] = (u8)((page_offset & 0xff00) >> 8);
 	cmd->cmd[2] = (u8)(page_offset & 0xff);
 	cmd->n_tx = length;
 	cmd->tx_buf = write_buf;
+	cmd->tx_nbits = spi->mode & SPI_TX_QUAD ? 4 : 1;
 
 	dev_dbg(snand->dev, "%s: offset 0x%x\n", __func__, page_offset);
 
