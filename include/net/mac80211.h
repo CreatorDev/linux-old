@@ -1271,7 +1271,8 @@ enum ieee80211_smps_mode {
  */
 struct ieee80211_conf {
 	u32 flags;
-	int power_level, dynamic_ps_timeout;
+	int power_level, dynamic_ps_timeout, dynamic_ps_rx_timeout ;
+	int dynamic_ps_rx_traffic_timeout;
 
 	u16 listen_interval;
 	u8 ps_dtim_period;
