@@ -538,6 +538,102 @@ static ssize_t ieee80211_if_parse_tsf(
 }
 IEEE80211_IF_FILE_RW(tsf);
 
+static ssize_t ieee80211_if_fmt_max_more_data_cnt(
+	const struct ieee80211_sub_if_data *sdata, char *buf, int buflen)
+{
+	return snprintf(buf, buflen, "max_more_data_cnt value is %d\n",sdata->max_more_data_cnt);
+
+}
+static ssize_t ieee80211_if_parse_max_more_data_cnt(
+	struct ieee80211_sub_if_data *sdata, const char *buf, int buflen)
+{
+	unsigned int ret = 0;
+	unsigned int  max_more_data_cnt;
+
+	if (!ieee80211_sdata_running(sdata))
+		return -ENETDOWN;
+
+	ret = kstrtouint(buf, 0 ,&max_more_data_cnt);
+
+	if (ret)
+		return ret;
+
+	if (max_more_data_cnt < 0)
+		return -EINVAL;
+
+	sdata->max_more_data_cnt = max_more_data_cnt;
+
+	return buflen;
+}
+IEEE80211_IF_FILE_RW(max_more_data_cnt);
+
+static ssize_t ieee80211_if_fmt_dynamic_ps_rx_timeout(
+	const struct ieee80211_sub_if_data *sdata, char *buf, int buflen)
+{
+	struct ieee80211_local *local = sdata->local;
+	struct ieee80211_conf *conf = &local->hw.conf;
+
+	return snprintf(buf, buflen, "dynamic_ps_rx_timeout value is %dms\n",conf->dynamic_ps_rx_timeout);
+}
+
+static ssize_t ieee80211_if_parse_dynamic_ps_rx_timeout(
+	struct ieee80211_sub_if_data *sdata, const char *buf, int buflen)
+{
+	struct ieee80211_local *local = sdata->local;
+	struct ieee80211_conf *conf = &local->hw.conf;
+	unsigned int ret = 0;
+	unsigned int  dynamic_ps_rx_timeout;
+
+	if (!ieee80211_sdata_running(sdata))
+		return -ENETDOWN;
+
+	ret = kstrtouint(buf, 0 ,&dynamic_ps_rx_timeout);
+
+	if (ret)
+		return ret;
+
+	if (dynamic_ps_rx_timeout < 0)
+		return -EINVAL;
+
+	conf->dynamic_ps_rx_timeout= dynamic_ps_rx_timeout;
+
+	return buflen;
+}
+IEEE80211_IF_FILE_RW(dynamic_ps_rx_timeout);
+
+static ssize_t ieee80211_if_fmt_dynamic_ps_rx_traffic_timeout(
+	const struct ieee80211_sub_if_data *sdata, char *buf, int buflen)
+{
+	struct ieee80211_local *local = sdata->local;
+	struct ieee80211_conf *conf = &local->hw.conf;
+
+	return snprintf(buf, buflen, "dynamic_ps_rx_traffic_timeout (starts after 1st MD) value is %dms\n",conf->dynamic_ps_rx_traffic_timeout);
+}
+static ssize_t ieee80211_if_parse_dynamic_ps_rx_traffic_timeout(
+	struct ieee80211_sub_if_data *sdata, const char *buf, int buflen)
+{
+	struct ieee80211_local *local = sdata->local;
+	struct ieee80211_conf *conf = &local->hw.conf;
+	unsigned int ret = 0;
+	unsigned int  dynamic_ps_rx_traffic_timeout;
+
+	if (!ieee80211_sdata_running(sdata))
+		return -ENETDOWN;
+
+	ret = kstrtouint(buf, 0 ,&dynamic_ps_rx_traffic_timeout);
+
+	if (ret)
+		return ret;
+
+	if (dynamic_ps_rx_traffic_timeout < 0)
+		return -EINVAL;
+
+	conf->dynamic_ps_rx_traffic_timeout= dynamic_ps_rx_traffic_timeout;
+
+	return buflen;
+}
+IEEE80211_IF_FILE_RW(dynamic_ps_rx_traffic_timeout);
+
 
 /* WDS attributes */
 IEEE80211_IF_FILE(peer, u.wds.remote_addr, MAC);
@@ -630,7 +726,9 @@ static void add_sta_files(struct ieee80211_sub_if_data *sdata)
 	DEBUGFS_ADD_MODE(beacon_loss, 0200);
 	DEBUGFS_ADD_MODE(uapsd_queues, 0600);
 	DEBUGFS_ADD_MODE(uapsd_max_sp_len, 0600);
-	DEBUGFS_ADD_MODE(tdls_wider_bw, 0600);
+	DEBUGFS_ADD_MODE(max_more_data_cnt, 0600);
+	DEBUGFS_ADD_MODE(dynamic_ps_rx_timeout, 0600);
+	DEBUGFS_ADD_MODE(dynamic_ps_rx_traffic_timeout, 0600);
 }
 
 static void add_ap_files(struct ieee80211_sub_if_data *sdata)
