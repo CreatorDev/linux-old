@@ -621,8 +621,17 @@ struct ieee80211_hw *ieee80211_alloc_hw_nm(size_t priv_data_len,
 		  ieee80211_dynamic_ps_enable_work);
 	INIT_WORK(&local->dynamic_ps_disable_work,
 		  ieee80211_dynamic_ps_disable_work);
+	INIT_WORK(&local->dynamic_ps_rx_recalc_ps_work,
+		  ieee80211_dynamic_ps_rx_recalc_ps_work);
+
 	setup_timer(&local->dynamic_ps_timer,
 		    ieee80211_dynamic_ps_timer, (unsigned long) local);
+	/*Timers for Dynamic RX power save*/
+	setup_timer(&local->dynamic_ps_rx_timer,
+		    ieee80211_dynamic_ps_rx_timer, (unsigned long) local);
+
+	setup_timer(&local->dynamic_ps_rx_traffic_timer,
+		    ieee80211_dynamic_ps_rx_traffic_timer, (unsigned long) local);
 
 	INIT_WORK(&local->sched_scan_stopped_work,
 		  ieee80211_sched_scan_stopped_work);
@@ -865,6 +874,10 @@ int ieee80211_register_hw(struct ieee80211_hw *hw)
 	max_bitrates = 0;
 	supp_ht = false;
 	supp_vht = false;
+
+	local->hw.conf.dynamic_ps_rx_timeout = 100;
+	local->hw.conf.dynamic_ps_rx_traffic_timeout = 1500;
+
 	for (band = 0; band < IEEE80211_NUM_BANDS; band++) {
 		struct ieee80211_supported_band *sband;
 
