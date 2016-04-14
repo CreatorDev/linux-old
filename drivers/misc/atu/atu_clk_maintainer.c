@@ -208,9 +208,10 @@ ioctl_img_atu(struct file *file, unsigned int cmd, unsigned long arg)
 				ret = 0;
 			} else {
 				/* fill ppb and rate change event */
-				u_txc.freq = get_frac_pll_adj_freq();
-				u_txc.tick = patu_clk_mtner->event_timer_rate;
-				if (atu_rate_changed) {
+				if (u_txc.freq) {
+					u_txc.freq = get_frac_pll_adj_freq();
+					u_txc.tick = patu_clk_mtner->event_timer_rate;
+				} else if (atu_rate_changed) {
 					u_txc.status = 1;
 					atu_rate_changed = 0;
 				}
@@ -599,12 +600,41 @@ atu_clocks_calc_mult_shift(u32 *mult, u32 *shift, u32 from, u32 to, u32 maxsec)
 	*shift = sft;
 }
 
+static void atu_update_clk_time_on_rate_change(void)
+{
+	cycle_t ticks_now, ticks_delta;
+	s64 t;
+
+	/* Read present clock ticks */
+	ticks_now = patu_clk_mtner->atu_timecntr.cc->
+                       read(patu_clk_mtner->atu_timecntr.cc);
+
+	/* Calculate the ticks delta since the last atu time update */
+	ticks_delta = (patu_clk_mtner->atu_timecntr.cc->mask + 1 + ticks_now -
+			patu_clk_mtner->atu_timecntr.cycle_last) &
+			patu_clk_mtner->atu_timecntr.cc->mask;
+
+	/* Convert to nanoseconds */
+	t = clocksource_cyc2ns(ticks_delta, patu_clk_mtner->mult,
+                                       patu_clk_mtner->shift);
+	timespec_add_ns(&patu_clk_mtner->atu_time, t);
+	/* set cycle last */
+	patu_clk_mtner->atu_timecntr.cycle_last = ticks_now;
+
+	return;
+}
+
 static void atu_clk_rate_change_on_the_fly(unsigned long int rate)
 {
 	unsigned long flags;
 	u32 mult, shift, mask;
 	cycle_t clk_cycle;
 	u64 ntp_ns_per_cycle, ntp_ns_per_cycle_div;
+
+	/* update the time */
+	spin_lock_irqsave(&patu_clk_mtner->atu_clk_lock, flags);
+	atu_update_clk_time_on_rate_change();
+	spin_unlock_irqrestore(&patu_clk_mtner->atu_clk_lock, flags);
 
 	mask = patu_clk_mtner->atu_timecntr.cc->mask;
 
@@ -636,10 +666,6 @@ static void atu_clk_rate_change_on_the_fly(unsigned long int rate)
 	patu_clk_mtner->shifted_remain_ns_per_ntp_cycle =
 		ntp_ns_per_cycle - patu_clk_mtner->shifted_ns_per_ntp_cycle;
 
-	/* Update cycle_last with current read value */
-	patu_clk_mtner->atu_timecntr.cycle_last = patu_clk_mtner->
-			atu_timecntr.cc->read(patu_clk_mtner->atu_timecntr.cc);
-
 	spin_unlock_irqrestore(&patu_clk_mtner->atu_clk_lock, flags);
 }
 
@@ -651,12 +677,6 @@ static int atu_adjtimex(struct timex *txc)
 	/* Fractional PLL */
 	if (patu_clk_mtner->clk_atu) {
 		spin_lock_irqsave(&patu_clk_mtner->atu_clk_lock, flags);
-
-		/* check rate change flag */
-		if (atu_rate_changed) {
-			ret = 0;
-			goto unlock_and_return;
-		}
 
 		/* Time error correction - ADJ_SETOFFSET */
 		if (txc->modes & ADJ_SETOFFSET) {
@@ -894,7 +914,7 @@ static int atu_clk_notifier_cb(struct notifier_block *nb,
 		 */
 		if (diff > EVENT_TIMER_RATE_TOLERANCE) {
 			atu_clk_rate_change_on_the_fly(ndata->new_rate);
-			pr_info("ATU rate change %lu\n", ndata->new_rate);
+			//pr_info("ATU rate change %lu\n", ndata->new_rate);
 		}
 		return NOTIFY_OK;
 	case POST_RATE_CHANGE:
