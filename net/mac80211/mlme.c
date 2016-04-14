@@ -1650,7 +1650,7 @@ void ieee80211_dynamic_ps_rx_recalc_ps_work(struct work_struct *work)
 			     dynamic_ps_rx_recalc_ps_work);
 
 	mutex_lock(&local->iflist_mtx);
-	ieee80211_recalc_ps(local, -1);
+	ieee80211_recalc_ps(local);
 	mutex_unlock(&local->iflist_mtx);
 }
 
