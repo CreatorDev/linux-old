@@ -40,15 +40,25 @@
 const char *get_system_type(void)
 {
 	u32 core_rev;
+	const char *sys_type;
 
 	core_rev = __raw_readl((const void *)PISTACHIO_CORE_REV_REG);
 
-	if (core_rev == PISTACHIO_CORE_REV_B0)
-		return "IMG Pistachio SoC (B0)";
-	else if (core_rev == PISTACHIO_CORE_REV_A1)
-		return "IMG_Pistachio SoC (A1)";
-	else
-		return "IMG_Pistachio SoC";
+	switch (core_rev) {
+	case PISTACHIO_CORE_REV_B0:
+		sys_type = "IMG Pistachio SoC (B0)";
+		break;
+
+	case PISTACHIO_CORE_REV_A1:
+		sys_type = "IMG Pistachio SoC (A1)";
+		break;
+
+	default:
+		sys_type = "IMG Pistachio SoC";
+		break;
+	}
+
+	return sys_type;
 }
 
 static void __init plat_setup_iocoherency(void)
