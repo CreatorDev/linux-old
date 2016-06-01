@@ -61,37 +61,12 @@ const char *get_system_type(void)
 	return sys_type;
 }
 
-static void __init plat_setup_iocoherency(void)
-{
-	/*
-	 * Kernel has been configured with software coherency
-	 * but we might choose to turn it off and use hardware
-	 * coherency instead.
-	 */
-	if (mips_cm_numiocu() != 0) {
-		/* Nothing special needs to be done to enable coherency */
-		pr_info("CMP IOCU detected\n");
-		hw_coherentio = 1;
-		if (coherentio == 0)
-			pr_info("Hardware DMA cache coherency disabled\n");
-		else
-			pr_info("Hardware DMA cache coherency enabled\n");
-	} else {
-		if (coherentio == 1)
-			pr_info("Hardware DMA cache coherency unsupported, but enabled from command line!\n");
-		else
-			pr_info("Software DMA cache coherency enabled\n");
-	}
-}
-
 void __init plat_mem_setup(void)
 {
 	if (fw_arg0 != -2)
 		panic("Device-tree not present");
 
 	__dt_setup_arch((void *)fw_arg1);
-
-	plat_setup_iocoherency();
 }
 
 #define DEFAULT_CPC_BASE_ADDR	0x1bde0000
