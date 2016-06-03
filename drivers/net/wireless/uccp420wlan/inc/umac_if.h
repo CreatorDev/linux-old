@@ -241,6 +241,8 @@ extern int uccp420wlan_prog_roc(unsigned int roc_status,
 				unsigned int roc_duration,
 				unsigned int roc_type);
 
+extern int uccp420wlan_prog_radar_detect(unsigned int op_code);
+
 #ifdef CONFIG_PM
 extern int uccp420wlan_prog_econ_ps_state(int if_index,
 					  unsigned int ps_state);

@@ -36,9 +36,10 @@
 #include <linux/time.h>
 #include <linux/sort.h>
 #include <linux/etherdevice.h>
-
+#include "core.h"
 #include "hal.h"
 #include "hal_hostport.h"
+#include "fwldr.h"
 
 #include <linux/of.h>
 #include <linux/of_net.h>
@@ -46,6 +47,7 @@
 #include <linux/module.h>
 #include <linux/clk.h>
 #include <linux/iio/consumer.h>
+#include <linux/syscore_ops.h>
 
 #define COMMAND_START_MAGIC 0xDEAD
 
@@ -91,12 +93,28 @@ spinlock_t  timing_lock;
 
 #ifdef HAL_DEBUG
 #define _HAL_DEBUG(fmt, args...) pr_debug(fmt, ##args)
-/* for send and receive count. */
-static unsigned long tx_cnt;
-static unsigned long rx_cnt;
 #else /* CONFIG_HAL_DEBUG */
 #define _HAL_DEBUG(...) do { } while (0)
 #endif /* CONFIG_HAL_DEBUG */
+
+#define UCCP_DEBUG_HAL(fmt, ...)                           \
+do {							\
+	if ((uccp_debug & UCCP_DEBUG_HAL) && net_ratelimit()) \
+		pr_debug(fmt, ##__VA_ARGS__);	 \
+} while (0)
+
+#define UCCP_DEBUG_DUMP_HAL(fmt, ...)                           \
+do {							\
+	if (uccp_debug & UCCP_DEBUG_DUMP_HAL)			\
+		print_hex_dump(KERN_DEBUG, fmt, ##__VA_ARGS__);	 \
+} while (0)
+
+#define DUMP_HAL (uccp_debug & UCCP_DEBUG_DUMP_HAL)
+
+/* for send and receive count. */
+static unsigned long tx_cnt;
+static unsigned long rx_cnt;
+/*UCCP_DEBUG_HAL */
 
 unsigned char vif_macs[2][ETH_ALEN];
 
@@ -121,12 +139,156 @@ int num_streams_vpd = -1;
 #define CHECK_EVENT_LEN(x) ((x) < 0x5000)
 #define CHECK_RX_PKT_CNT(x) ((x) >= 1 && (x) <= 16)
 /* #define CHECK_SRC_PTR(x, y) ((x) >= (y) && (x) <= (y) +
- * HAL_HOST_UCCP_RAM_LEN)
+ * HAL_HOST_BOUNCE_BUF_LEN)
  */
 #define CHECK_PKT_DESC(x) ((x) < (hpriv->rx_bufs_2k + hpriv->rx_bufs_12k))
 /* MAX_RX_BUFS */
 
 #define DEFAULT_MAC_ADDRESS "001122334455"
+
+static void __iomem *get_base_address_64mb(unsigned int bounce_addr)
+{
+	int boundary = 0x4000000 /*64MB*/;
+	unsigned int chunk_start_offset;
+	unsigned int chunk_start, next_chunk_start;
+
+	/* divide the DDR in to 64MB chunks.
+	 * and return the chuunk address base corresponding to the
+	 * 4mb_addr.
+	 */
+	chunk_start_offset = (unsigned int) bounce_addr/boundary;
+	chunk_start = chunk_start_offset * boundary;
+	next_chunk_start = (chunk_start_offset + 1) * boundary;
+
+	/* 4MB region spans across chunks, program
+	 * bounce_addr-60MB as start of 64MB region.
+	 */
+	if (bounce_addr + HAL_HOST_BOUNCE_BUF_LEN > next_chunk_start) {
+		pr_info("%s: bounce_addr spans across chunks\n", __func__);
+		chunk_start = bounce_addr - HAL_HOST_NON_BOUNCE_BUF_LEN;
+	}
+
+	pr_info("bounce_addr: 0x%x chunk_start: 0x%x\n",
+		(unsigned int) bounce_addr,
+		chunk_start_offset);
+
+	return (void __iomem *) (chunk_start);
+}
+
+
+int hal_get_dump_len(unsigned long dump_type)
+{
+	unsigned int dump_len = 0;
+
+	switch (dump_type) {
+	case HAL_RPU_TM_CMD_GRAM:
+		dump_len = hpriv->uccp_pkd_gram_len;
+	break;
+	case HAL_RPU_TM_CMD_COREA:
+		dump_len = UCCP_COREA_REGION_LEN;
+	break;
+	case HAL_RPU_TM_CMD_COREB:
+		dump_len = UCCP_COREB_REGION_LEN;
+	break;
+	case HAL_RPU_TM_CMD_PERIP:
+		dump_len = hpriv->uccp_perip_len;
+	break;
+	case HAL_RPU_TM_CMD_SYSBUS:
+		dump_len = hpriv->uccp_sysbus_len;
+	break;
+	default:
+		dump_len = 0;
+	}
+	return dump_len;
+}
+
+int hal_get_dump_gram(long *dump_start)
+{
+	char *gram_dump;
+
+	gram_dump = kzalloc(hpriv->uccp_pkd_gram_len, GFP_KERNEL);
+
+	if (!dump_start)
+		return -ENOMEM;
+
+	memcpy(gram_dump,
+	       (char *)hpriv->gram_base_addr,
+	       hpriv->uccp_pkd_gram_len);
+
+	*dump_start = (long) gram_dump;
+
+	return 0;
+}
+
+int hal_get_dump_core(unsigned long  *dump_start, unsigned char region_type)
+{
+	unsigned int *core_dump;
+	unsigned long len = 0;
+	unsigned long region_start;
+
+	if (region_type == UCCP_REGION_TYPE_COREA) {
+		len = UCCP_COREA_REGION_LEN;
+		region_start = UCCP_COREA_REGION_START;
+	} else if (region_type  == UCCP_REGION_TYPE_COREB) {
+		len = UCCP_COREB_REGION_LEN;
+		region_start = UCCP_COREB_REGION_START;
+	}
+
+	core_dump = kzalloc(len, GFP_KERNEL);
+
+	if (!core_dump)
+		return -ENOMEM;
+
+	if (len % 4)
+		len = len/4 + 1;
+	else
+		len = len/4;
+
+	rpudump_init();
+
+	core_mem_read(region_start, core_dump, len);
+
+	*dump_start = (unsigned long) core_dump;
+
+	return 0;
+
+}
+
+int hal_get_dump_perip(unsigned long  *dump_start)
+{
+	unsigned int *perip_dump;
+
+	perip_dump = kzalloc(hpriv->uccp_perip_len, GFP_KERNEL);
+
+	if (!perip_dump)
+		return -ENOMEM;
+
+	memcpy(perip_dump,
+	       (char *)hpriv->uccp_perip_base_addr,
+	       hpriv->uccp_perip_len);
+
+	*dump_start = (unsigned long) perip_dump;
+
+	return 0;
+}
+
+int hal_get_dump_sysbus(unsigned long  *dump_start)
+{
+	unsigned int *sysbus_dump;
+
+	sysbus_dump = kzalloc(hpriv->uccp_sysbus_len, GFP_KERNEL);
+
+	if (!sysbus_dump)
+		return -ENOMEM;
+
+	memcpy(sysbus_dump,
+	       (char *)hpriv->uccp_sysbus_base_addr,
+	       hpriv->uccp_sysbus_len);
+
+	*dump_start = (unsigned long) sysbus_dump;
+	return 0;
+
+}
 
 static int hal_reset_hal_params(void)
 {
@@ -156,42 +318,31 @@ static void tx_tasklet_fn(unsigned long data)
 	struct sk_buff *skb;
 	unsigned int value = 0;
 	unsigned long start_addr;
-	struct timeval tv_start, tv_now;
-	long usec_diff = 0;
+	unsigned long start = 0;
 
 	while ((skb = skb_dequeue(&priv->txq))) {
-#ifdef HAL_DEBUG
 		tx_cnt++;
-		pr_debug("%s: tx_cnt=%ld cmd_cnt=0x%X event_cnt=0x%X\n",
-		       hal_name, tx_cnt, priv->cmd_cnt, priv->event_cnt);
-		pr_debug("%s: xmit dump\n", hal_name);
-		print_hex_dump(KERN_DEBUG, " ", DUMP_PREFIX_NONE, 16, 1,
-			       skb->data, skb->len, 1);
-#endif
+		UCCP_DEBUG_HAL("%s: tx_cnt=%ld cmd_cnt=0x%X event_cnt=0x%X\n",
+				hal_name,
+				tx_cnt,
+				priv->cmd_cnt,
+				priv->event_cnt);
+		if (DUMP_HAL) {
+			UCCP_DEBUG_HAL("%s: xmit dump\n", hal_name);
+			UCCP_DEBUG_DUMP_HAL(" ", DUMP_PREFIX_NONE, 16, 1,
+					 skb->data, skb->len, 1);
+		}
 
-		/* Getting current time */
-		do_gettimeofday(&tv_start);
+		start = jiffies;
 
-		while (!hal_ready(priv)) {
-			/* Acquisition of the elapsed time */
-			do_gettimeofday(&tv_now);
-
-			if ((tv_now.tv_sec - tv_start.tv_sec) == 0) {
-				usec_diff = tv_now.tv_usec - tv_start.tv_usec;
-			} else {
-				/* Exceeding the second */
-				usec_diff = tv_now.tv_usec + (((1000 * 1000) -
-							 tv_start.tv_usec) + 1);
-			}
-
-			/* Checking the 1st Milestone & time-out(1000000usec) */
-			if (usec_diff > 1000 * 1000)
-				break;
+		while (!hal_ready(priv) &&
+		     time_before(jiffies, start + msecs_to_jiffies(1000))) {
+			;
 		}
 
 		if (!hal_ready(priv)) {
-			pr_err("%s: Intf not ready for %ld us, dropping cmd\n",
-			       hal_name, usec_diff);
+			pr_err("%s: Intf not ready for 1000ms, dropping cmd\n",
+			       hal_name);
 			dev_kfree_skb_any(skb);
 			skb = NULL;
 		}
@@ -199,20 +350,15 @@ static void tx_tasklet_fn(unsigned long data)
 		if (!skb)
 			continue;
 
-		if (usec_diff > 1000) {
-			pr_err("%s: Interface ready took %ld us (> 1000 us)\n",
-			       hal_name, usec_diff);
-		}
-
 		if (priv->hal_disabled)
 			break;
 
 		/* Write the command buffer in GRAM */
 		start_addr = readl((void __iomem *)HAL_GRAM_CMD_START);
-#ifdef HAL_DEBUG
-		pr_debug("%s: Command address = 0x%08x\n",
+
+		UCCP_DEBUG_HAL("%s: Command address = 0x%08x\n",
 			 hal_name, (unsigned int)start_addr);
-#endif
+
 		start_addr -= HAL_UCCP_GRAM_BASE;
 		start_addr += ((priv->gram_mem_addr)-(priv->shm_offset));
 
@@ -222,7 +368,6 @@ static void tx_tasklet_fn(unsigned long data)
 			       hal_name, (unsigned int)start_addr);
 			dev_kfree_skb_any(skb);
 			skb = NULL;
-
 			continue;
 		}
 
@@ -232,9 +377,7 @@ static void tx_tasklet_fn(unsigned long data)
 
 		value = (unsigned int) (priv->cmd_cnt);
 		value |= 0x7fff0000;
-
 		writel(value, (void __iomem *)(HOST_TO_UCCP_CORE_CMD_ADDR));
-
 		priv->cmd_cnt++;
 		hal_cmd_sent++;
 
@@ -247,6 +390,13 @@ static void hostport_send(struct hal_priv  *priv,
 			  struct sk_buff   *skb)
 {
 	skb_queue_tail(&priv->txq, skb);
+	tasklet_schedule(&priv->tx_tasklet);
+}
+
+static void hostport_send_head(struct hal_priv  *priv,
+			  struct sk_buff   *skb)
+{
+	skb_queue_head(&priv->txq, skb);
 	tasklet_schedule(&priv->tx_tasklet);
 }
 
@@ -289,7 +439,6 @@ static void hal_send(void *nwb,
 			pkt++;
 			}
 
-		/* WRITE TO GRAM: HAL TX DATA Portion*/
 		dcp_start_addr = HAL_GRAM_TX_DATA_START +
 				 (desc_id * TX_DESC_HAL_SIZE);
 
@@ -302,6 +451,17 @@ static void hal_send(void *nwb,
 
 }
 
+static void recv_tasklet_fn(unsigned long data)
+{
+
+	struct hal_priv *priv = (struct hal_priv *)data;
+	struct sk_buff *skb;
+
+	while ((skb = skb_dequeue(&priv->refillq))) {
+		/* As we refilled the buffers, now pass them UP */
+		priv->rcv_handler(skb, LMAC_MOD_ID);
+	}
+}
 
 static void rx_tasklet_fn(unsigned long data)
 {
@@ -312,7 +472,7 @@ static void rx_tasklet_fn(unsigned long data)
 	unsigned char *nbuff;
 	struct event_hal *evnt;
 	struct cmd_hal cmd_rx;
-	struct sk_buff *nbuf, *rx_skb, *rfl_skb, *tmp_buf;
+	struct sk_buff *nbuf, *rx_skb;
 	unsigned char *cmd_data;
 	unsigned int payload_length, length, data_length;
 	void __iomem *src_ptr;
@@ -347,20 +507,20 @@ static void rx_tasklet_fn(unsigned long data)
 
 		/* Mark the buffer free */
 		temp = event_status_addr;
-#ifdef HAL_DEBUG
-		pr_debug("%s: Freeing event buffer at 0x%08x\n",
+
+		UCCP_DEBUG_HAL("%s: Freeing event buffer at 0x%08x\n",
 			 hal_name, (unsigned int)temp);
-#endif
+
 		*((unsigned long *)temp) = 0;
 
-#ifdef HAL_DEBUG
 		rx_cnt++;
-		pr_debug("%s:rx_cnt=%ld cmd_cnt=0x%X event_cnt=0x%X\n",
+		UCCP_DEBUG_HAL("%s:rx_cnt=%ld cmd_cnt=0x%X event_cnt=0x%X\n",
 			 hal_name, rx_cnt, priv->cmd_cnt, priv->event_cnt);
-		pr_debug("%s: recv dump\n", hal_name);
-		print_hex_dump(KERN_DEBUG, " ", DUMP_PREFIX_NONE, 16, 1,
-			       skb->data, skb->len, 1);
-#endif
+		if (DUMP_HAL) {
+			UCCP_DEBUG_HAL("%s: recv dump\n", hal_name);
+			UCCP_DEBUG_DUMP_HAL(" ", DUMP_PREFIX_NONE, 16, 1,
+						skb->data, skb->len, 1);
+		}
 		nbuff = skb->data;
 		evnt = (struct event_hal *)nbuff;
 
@@ -404,8 +564,9 @@ static void rx_tasklet_fn(unsigned long data)
 					break;
 				}
 
-				if (pkt_desc >= hpriv->rx_bufs_2k)
+				if (pkt_desc < hpriv->rx_bufs_12k)
 					max_data_size = MAX_DATA_SIZE_12K;
+
 				if (hpriv->rx_buf_info == NULL)
 					break;
 
@@ -421,20 +582,24 @@ static void rx_tasklet_fn(unsigned long data)
 						 DMA_FROM_DEVICE);
 
 				dma_buf = rx_buf_info->dma_buf;
-				src_ptr = (void __iomem *)phys_to_virt(dma_buf);
+				src_ptr = rx_buf_info->src_ptr;
 
 
-#ifdef HAL_DEBUG
-				pr_debug("%s: dma_buf = 0x%08X\n",
-					 hal_name, (unsigned int)dma_buf);
+				UCCP_DEBUG_HAL("%s: dma_buf = 0x%08X\n",
+						hal_name,
+						(unsigned int)dma_buf);
 
-				pr_debug("%s:src_ptr dump: size=200\n",
-					 hal_name);
+				UCCP_DEBUG_HAL("%s: src_ptr = 0x%08X\n",
+					       hal_name,
+					       (unsigned int)src_ptr);
 
-				print_hex_dump(KERN_DEBUG, " ",
-					       DUMP_PREFIX_NONE, 16, 1, src_ptr,
-					       200, 1);
-#endif
+				if (DUMP_HAL) {
+					UCCP_DEBUG_HAL("DMA data dump:");
+					UCCP_DEBUG_HAL(" size=200\n");
+					UCCP_DEBUG_DUMP_HAL(" ",
+							DUMP_PREFIX_NONE, 16,
+							1, src_ptr, 200, 1);
+				}
 
 				/* Offset in UMAC_LMAC_MSG_HDR, points to
 				 * payload_length
@@ -449,31 +614,47 @@ static void rx_tasklet_fn(unsigned long data)
 				data_length = payload_length + length;
 
 				/* Complete data length to be copied */
-				_HAL_DEBUG("%s: Payload Len =%d(0x%x), ",
+				UCCP_DEBUG_HAL("%s: Payload Len =%d(0x%x), ",
 					   hal_name,
 					   payload_length,
 					   payload_length);
 
-				_HAL_DEBUG("Len=%d(0x%x), ",
+				UCCP_DEBUG_HAL("Len=%d(0x%x), ",
 					   length,
 					   length);
 
-				_HAL_DEBUG("Data Len = %d(0x%x)\n",
+				UCCP_DEBUG_HAL("Data Len = %d(0x%x)\n",
 					   data_length,
 					   data_length);
 
 				if (data_length > max_data_size) {
-					pr_err("Max length exceeded,dumping the event\n");
+					pr_err("Max length exceeded:");
+					pr_err(" payload_len: %d len:%d",
+						payload_length,
+						length);
+					pr_err(" data_len:%d desc:%d\n",
+						data_length,
+						pkt_desc);
 
-					tmp_buf = (struct sk_buff *)nbuff;
 
-					print_hex_dump(KERN_ERR,
-						       " ",
+					pr_err("Event from LMAC:");
+					print_hex_dump(KERN_DEBUG,
+						       "",
 						       DUMP_PREFIX_NONE,
 						       16,
 						       1,
-						       tmp_buf,
-						       tmp_buf->len,
+						       skb->data,
+						       skb->len,
+						       1);
+
+					pr_err("DMA Data from LMAC:");
+					print_hex_dump(KERN_DEBUG,
+						       "",
+						       DUMP_PREFIX_NONE,
+						       16,
+						       1,
+						       src_ptr,
+						       200,
 						       1);
 
 					/* Do not send the packet UP,
@@ -552,7 +733,7 @@ static void rx_tasklet_fn(unsigned long data)
 					       (unsigned char *)&cmd_rx,
 					       sizeof(struct cmd_hal));
 					hal_cmd_sent--;
-					hostport_send(hpriv, nbuf);
+					hostport_send_head(hpriv, nbuf);
 
 				}
 			}
@@ -583,9 +764,7 @@ static void rx_tasklet_fn(unsigned long data)
 			/* Start the Timer for RCV Handler Profiling */
 			do_gettimeofday(&tv_start);
 #endif
-			/* As we refilled the buffers, now pass them UP */
-			while ((rfl_skb = skb_dequeue(&hpriv->refillq)))
-				priv->rcv_handler(rfl_skb, LMAC_MOD_ID);
+			tasklet_schedule(&priv->recv_tasklet);
 #ifdef PERF_PROFILING
 			do_gettimeofday(&tv_now);
 
@@ -642,10 +821,12 @@ static irqreturn_t hal_irq_handler(int    irq, void  *p)
 
 	value = readl((void __iomem *)(UCCP_CORE_TO_HOST_CMD_ADDR)) &
 		0x7fffffff;
-
 	if (value == (0x7fff0000 | priv->event_cnt)) {
 #ifdef PERF_PROFILING
 		do_gettimeofday(&tv_start);
+#endif
+#ifdef CONFIG_PM
+		rx_interrupt_status = 1;
 #endif
 		event_addr = readl((void __iomem *)HAL_GRAM_EVENT_START);
 		event_status_addr = readl((void __iomem *)(HAL_GRAM_EVENT_START
@@ -657,27 +838,28 @@ static irqreturn_t hal_irq_handler(int    irq, void  *p)
 		    !(CHECK_EVENT_STATUS_ADDR_UCCP(event_status_addr)) ||
 		    !CHECK_EVENT_LEN(event_len)) {
 			pr_err("%s: Error!!! event_addr = 0x%08x\n",
-			       __func__, (unsigned int)event_addr);
+			       __func__,
+			       (unsigned int)event_addr);
 
 			pr_err("%s: Error!!! event_len =%d\n",
-			       __func__, (int)event_len);
+			       __func__,
+			       (int)event_len);
 
 			pr_err("%s: Error!!! event_status_addr = 0x%08x\n",
-			       __func__, (unsigned int)event_status_addr);
+			       __func__,
+			       (unsigned int)event_status_addr);
 
 			is_err = 1;
 		}
-
-#ifdef HAL_DEBUG
-		pr_debug("%s: event address = 0x%08x\n",
-			 hal_name, (unsigned int)event_addr);
-
-		pr_debug("%s: event status address = 0x%08x\n",
-			 hal_name, (unsigned int)event_status_addr);
-
-		pr_debug("%s: event len = %d\n",
-			 hal_name, (int)event_len);
-#endif
+		UCCP_DEBUG_HAL("%s: event address = 0x%08x\n",
+			hal_name,
+			(unsigned int)event_addr);
+		UCCP_DEBUG_HAL("%s: event status address = 0x%08x\n",
+			hal_name,
+			(unsigned int)event_status_addr);
+		UCCP_DEBUG_HAL("%s: event len = %d\n",
+			hal_name,
+			(int)event_len);
 
 		if (unlikely(is_err)) {
 			/* If addr is valid try to clear */
@@ -822,6 +1004,32 @@ static int max_array(unsigned long *arr, unsigned int max_index)
 #endif
 
 
+static int proc_write_hal_stats(struct file          *file,
+		const char __user    *buffer,
+		size_t		     count,
+		loff_t               *ppos)
+{
+	char buf[50];
+	unsigned long val;
+
+	if (count >= sizeof(buf))
+		count = sizeof(buf)-1;
+
+	if (copy_from_user(buf, buffer, count))
+		return -EFAULT;
+	buf[count] = '\0';
+
+	if (param_get_val(buf, "get_gram_dump=", &val))
+		hal_get_dump_gram(&val);
+	else if (param_get_val(buf, "get_core_dump=", &val))
+		hal_get_dump_core(&val, 0);
+	else if (param_get_val(buf, "get_perip_dump=", &val))
+		hal_get_dump_perip(&val);
+	else if (param_get_val(buf, "get_sysbus_dump=", &val))
+		hal_get_dump_sysbus(&val);
+	return count;
+}
+
 static int proc_read_hal_stats(struct seq_file *m, void *v)
 {
 #ifdef PERF_PROFILING
@@ -898,7 +1106,7 @@ static const struct file_operations params_fops_hal_stats = {
 	.open = proc_open_hal_stats,
 	.read = seq_read,
 	.llseek = seq_lseek,
-	.write = NULL,
+	.write = proc_write_hal_stats,
 	.release = single_release
 };
 
@@ -957,6 +1165,7 @@ static void stats_timer_expiry(unsigned long data)
 
 int hal_start(void)
 {
+
 #ifdef PERF_PROFILING
 	init_timer(&stats_timer);
 	stats_timer.function = stats_timer_expiry;
@@ -974,7 +1183,6 @@ int hal_start(void)
 
 int hal_stop(void)
 {
-
 	/* Disable host_int and uccp_irq */
 	hal_disable_int(NULL);
 	return 0;
@@ -983,7 +1191,7 @@ int hal_stop(void)
 
 static int chg_irq_register(int val)
 {
-	pr_debug("%s: change irq regist state %s.\n",
+	UCCP_DEBUG_HAL("%s: change irq regist state %s.\n",
 		 hal_name, ((val == 1) ? "ON" : "OFF"));
 
 	if (val == 0) {
@@ -994,7 +1202,7 @@ static int chg_irq_register(int val)
 		/* Register irq handler */
 		if (request_irq(hpriv->irq,
 				hal_irq_handler,
-				0,
+				IRQF_NO_SUSPEND,
 				"wlan",
 				hpriv) != 0) {
 			return -1;
@@ -1041,12 +1249,12 @@ static inline int conv_str_to_byte(unsigned char *byte,
 static int cleanup_all_resources(void)
 {
 	/* Unmap UCCP core memory */
-	iounmap((void __iomem *)hpriv->uccp_base_addr);
-	release_mem_region(hpriv->uccp_core_base, hpriv->uccp_core_len);
+	iounmap((void __iomem *)hpriv->uccp_sysbus_base_addr);
+	release_mem_region(hpriv->uccp_sysbus_base, hpriv->uccp_sysbus_len);
 
-	/* Unmap UCCP slave memory */
-	iounmap((void __iomem *)hpriv->uccp_slave_base_addr);
-	release_mem_region(hpriv->uccp_slave_base, hpriv->uccp_slave_len);
+	/* Unmap UCCP perip memory */
+	iounmap((void __iomem *)hpriv->uccp_perip_base_addr);
+	release_mem_region(hpriv->uccp_perip_base, hpriv->uccp_perip_len);
 
 	/* Unmap GRAM */
 	iounmap((void __iomem *)hpriv->gram_base_addr);
@@ -1084,20 +1292,20 @@ static int uccp420_pltfr_probe(struct platform_device *pdev)
 	hpriv->irq = irq;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-					   "uccp_core_base");
+					   "uccp_sysbus_base");
 	if (res == NULL)
-		return pr_err("No dts entry : uccp_core_base");
+		return pr_err("No dts entry : uccp_sysbus_base");
 
-	hpriv->uccp_core_base = res->start;
-	hpriv->uccp_core_len = res->end - res->start + 1;
+	hpriv->uccp_sysbus_base = res->start;
+	hpriv->uccp_sysbus_len = res->end - res->start + 1;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
-					   "uccp_slave_base");
+					   "uccp_perip_base");
 	if (res == NULL)
-		return pr_err("No dts entry : uccp_slave_base");
+		return pr_err("No dts entry : uccp_perip_base");
 
-	hpriv->uccp_slave_base = res->start;
-	hpriv->uccp_slave_len = res->end - res->start + 1;
+	hpriv->uccp_perip_base = res->start;
+	hpriv->uccp_perip_len = res->end - res->start + 1;
 
 	res = platform_get_resource_byname(pdev, IORESOURCE_MEM,
 					   "uccp_pkd_gram_base");
@@ -1134,7 +1342,11 @@ static int uccp420_pltfr_probe(struct platform_device *pdev)
 
 		ether_addr_copy(vif_macs[1], vif_macs[0]);
 
-		vif_macs[1][5]++;
+		/* Set the Locally Administered bit*/
+		vif_macs[1][0] |= 0x02;
+
+		/* Increment the MSB by 1 (excluding 2 special bits)*/
+		vif_macs[1][0] += (1 << 2);
 	}
 
 	pp = of_find_property(np, "rf-params", &size);
@@ -1172,7 +1384,7 @@ static int uccp420_pltfr_probe(struct platform_device *pdev)
 	ret = hal_ops.init(&pdev->dev);
 
 	if (!ret)
-		pr_debug("uccp420 wlan driver registration completed");
+		UCCP_DEBUG_HAL("uccp420 wlan driver registration completed");
 
 	return ret;
 }
@@ -1235,7 +1447,7 @@ static int hal_deinit(void *dev)
 	/* Kill the HAL tasklet */
 	tasklet_kill(&hpriv->tx_tasklet);
 	tasklet_kill(&hpriv->rx_tasklet);
-
+	tasklet_kill(&hpriv->recv_tasklet);
 	while ((skb = skb_dequeue(&hpriv->rxq)))
 		dev_kfree_skb_any(skb);
 
@@ -1255,18 +1467,22 @@ static int hal_init(void *dev)
 {
 	struct proc_dir_entry *main_dir_entry;
 	int err = 0;
+	unsigned int value = 0;
+	unsigned char *rpusocwrap;
+	void __iomem *sixfour_mb_base;
+	unsigned int phys_64mb;
 
 	(void) (dev);
 
 	hpriv->shm_offset =  shm_offset;
 
 	if (hpriv->shm_offset != HAL_SHARED_MEM_OFFSET)
-		pr_debug("%s: Using shared memory offset 0x%lx\n",
+		UCCP_DEBUG_HAL("%s: Using shared memory offset 0x%lx\n",
 			 hal_name, hpriv->shm_offset);
 
 	/* Map UCCP core memory */
-	if (!(request_mem_region(hpriv->uccp_core_base,
-				 hpriv->uccp_core_len,
+	if (!(request_mem_region(hpriv->uccp_sysbus_base,
+				 hpriv->uccp_sysbus_len,
 				 "uccp"))) {
 		pr_err("%s: request_mem_region failed for UCCP core region\n",
 		       hal_name);
@@ -1275,47 +1491,48 @@ static int hal_init(void *dev)
 		return -ENOMEM;
 	}
 
-	hpriv->uccp_base_addr =
-	(unsigned long)devm_ioremap(dev, hpriv->uccp_core_base,
-				    hpriv->uccp_core_len);
+	hpriv->uccp_sysbus_base_addr = (unsigned long)devm_ioremap(dev,
+							hpriv->uccp_sysbus_base,
+							hpriv->uccp_sysbus_len);
 
-	if (hpriv->uccp_base_addr == 0) {
+	if (hpriv->uccp_sysbus_base_addr == 0) {
 		pr_err("%s: Ioremap failed for UCCP core mem region\n",
 			hal_name);
 
-		release_mem_region(hpriv->uccp_core_base,
-				   hpriv->uccp_core_len);
+		release_mem_region(hpriv->uccp_sysbus_base,
+				   hpriv->uccp_sysbus_len);
 		kfree(hpriv);
 
 		return -ENOMEM;
 	}
 
-	hpriv->uccp_mem_addr = hpriv->uccp_base_addr + HAL_UCCP_CORE_REG_OFFSET;
+	hpriv->uccp_mem_addr = hpriv->uccp_sysbus_base_addr +
+			       HAL_UCCP_CORE_REG_OFFSET;
 
-	/* Map UCCP slave memory */
-	if (!(request_mem_region(hpriv->uccp_slave_base,
-				 hpriv->uccp_slave_len,
+	/* Map UCCP Perip memory */
+	if (!(request_mem_region(hpriv->uccp_perip_base,
+				 hpriv->uccp_perip_len,
 				 "uccp"))) {
-		pr_err("%s: request_mem_region failed for UCCP slave region\n",
+		pr_err("%s: request_mem_region failed for UCCP perip region\n",
 		       hal_name);
 
 		kfree(hpriv);
 		return -ENOMEM;
 	}
 
-	hpriv->uccp_slave_base_addr =
-	(unsigned long) devm_ioremap(dev, hpriv->uccp_slave_base,
-				     hpriv->uccp_slave_len);
+	hpriv->uccp_perip_base_addr =
+	(unsigned long) devm_ioremap(dev, hpriv->uccp_perip_base,
+				     hpriv->uccp_perip_len);
 
-	if (hpriv->uccp_slave_base_addr == 0) {
-		pr_err("%s: Ioremap failed for UCCP slave mem region\n",
+	if (hpriv->uccp_perip_base_addr == 0) {
+		pr_err("%s: Ioremap failed for UCCP perip mem region\n",
 			hal_name);
 
-		iounmap((void __iomem *)hpriv->uccp_base_addr);
-		release_mem_region(hpriv->uccp_core_base,
-				   hpriv->uccp_core_len);
-		release_mem_region(hpriv->uccp_slave_base,
-				   hpriv->uccp_slave_len);
+		iounmap((void __iomem *)hpriv->uccp_sysbus_base_addr);
+		release_mem_region(hpriv->uccp_sysbus_base,
+				   hpriv->uccp_sysbus_len);
+		release_mem_region(hpriv->uccp_perip_base,
+				   hpriv->uccp_perip_len);
 		kfree(hpriv);
 
 		return -ENOMEM;
@@ -1328,9 +1545,9 @@ static int hal_init(void *dev)
 		pr_err("%s: request_mem_region failed for GRAM\n",
 		       hal_name);
 
-		iounmap((void __iomem *)hpriv->uccp_base_addr);
-		release_mem_region(hpriv->uccp_core_base,
-				   hpriv->uccp_core_len);
+		iounmap((void __iomem *)hpriv->uccp_sysbus_base_addr);
+		release_mem_region(hpriv->uccp_sysbus_base,
+				   hpriv->uccp_sysbus_len);
 
 		kfree(hpriv);
 
@@ -1344,9 +1561,9 @@ static int hal_init(void *dev)
 		pr_err("%s: Ioremap failed for g ram region.\n",
 		       hal_name);
 
-		iounmap((void __iomem *)hpriv->uccp_base_addr);
-		release_mem_region(hpriv->uccp_core_base,
-				   hpriv->uccp_core_len);
+		iounmap((void __iomem *)hpriv->uccp_sysbus_base_addr);
+		release_mem_region(hpriv->uccp_sysbus_base,
+				   hpriv->uccp_sysbus_len);
 		release_mem_region(hpriv->uccp_pkd_gram_base,
 				   hpriv->uccp_pkd_gram_len);
 
@@ -1357,13 +1574,13 @@ static int hal_init(void *dev)
 
 	hpriv->gram_mem_addr = hpriv->gram_base_addr + hpriv->shm_offset;
 
-	hpriv->base_addr_uccp_host_ram = kmalloc(HAL_HOST_UCCP_RAM_LEN,
+	hpriv->base_addr_uccp_host_ram = kmalloc(HAL_HOST_BOUNCE_BUF_LEN,
 						 GFP_KERNEL);
 
 	if (!hpriv->base_addr_uccp_host_ram) {
-		iounmap((void __iomem *)hpriv->uccp_base_addr);
-		release_mem_region(hpriv->uccp_core_base,
-				   hpriv->uccp_core_len);
+		iounmap((void __iomem *)hpriv->uccp_sysbus_base_addr);
+		release_mem_region(hpriv->uccp_sysbus_base,
+				   hpriv->uccp_sysbus_len);
 
 		iounmap((void __iomem *)hpriv->gram_base_addr);
 		release_mem_region(hpriv->uccp_pkd_gram_base,
@@ -1374,22 +1591,27 @@ static int hal_init(void *dev)
 		return -ENOMEM;
 	}
 
-	pr_debug("%s: kmalloc success: %p an phy: 0x%x\n",
+	phys_64mb = virt_to_phys(hpriv->base_addr_uccp_host_ram);
+
+	UCCP_DEBUG_HAL("%s: kmalloc success: %p an phy: 0x%x\n",
 		 __func__,
 		 hpriv->base_addr_uccp_host_ram,
-		 (unsigned int)virt_to_phys(hpriv->base_addr_uccp_host_ram));
+		 phys_64mb);
 
-	{
-	unsigned int value = 0;
-	unsigned char *rpusocwrap;
+	/* Program the 64MB base address to the RPU.
+	 * RPU can access only 64MB starting from this
+	 * address.
+	 */
+	sixfour_mb_base = get_base_address_64mb(phys_64mb);
 
-	rpusocwrap = (unsigned char *)(hpriv->uccp_base_addr + 0x38000);
 
-	value = virt_to_phys(hpriv->base_addr_uccp_host_ram) / (4 * 1024);
+	rpusocwrap = (unsigned char *)(hpriv->uccp_sysbus_base_addr + 0x38000);
+
+	value = ((unsigned int)sixfour_mb_base) / (4 * 1024);
 	uccp_ddr_base = value * (4 * 1024);
 	value = value << 10;
 	writel(value, rpusocwrap + 0x218);
-	}
+
 
 	if (hpriv->uccp_gram_base) {
 
@@ -1437,8 +1659,15 @@ static int hal_init(void *dev)
 		return -ENOMEM;
 
 	/* Intialize HAL tasklets */
-	tasklet_init(&hpriv->tx_tasklet, tx_tasklet_fn, (unsigned long)hpriv);
-	tasklet_init(&hpriv->rx_tasklet, rx_tasklet_fn, (unsigned long)hpriv);
+	tasklet_init(&hpriv->tx_tasklet,
+		     tx_tasklet_fn,
+		     (unsigned long)hpriv);
+	tasklet_init(&hpriv->rx_tasklet,
+		     rx_tasklet_fn,
+		     (unsigned long)hpriv);
+	tasklet_init(&hpriv->recv_tasklet,
+		     recv_tasklet_fn,
+		     (unsigned long)hpriv);
 	skb_queue_head_init(&hpriv->rxq);
 	skb_queue_head_init(&hpriv->txq);
 	skb_queue_head_init(&hpriv->refillq);
@@ -1470,6 +1699,7 @@ static void hal_deinit_bufs(void)
 	struct buf_info *info = NULL;
 
 	tasklet_disable(&hpriv->rx_tasklet);
+	tasklet_disable(&hpriv->recv_tasklet);
 
 	if (hpriv->rx_buf_info) {
 		for (i = 0; i < hpriv->rx_bufs_2k + hpriv->rx_bufs_12k; i++) {
@@ -1518,6 +1748,7 @@ static void hal_deinit_bufs(void)
 
 	hpriv->hal_disabled = 1;
 	tasklet_enable(&hpriv->rx_tasklet);
+	tasklet_enable(&hpriv->recv_tasklet);
 }
 
 
@@ -1545,10 +1776,10 @@ static int hal_init_bufs(unsigned int tx_bufs,
 
 	if (((tx_bufs * NUM_FRAMES_IN_TX_DESC * tx_max_data_size) +
 	     ((rx_bufs_2k * MAX_DATA_SIZE_2K + rx_bufs_12k *
-	       MAX_DATA_SIZE_12K))) > HAL_HOST_UCCP_RAM_LEN) {
+	       MAX_DATA_SIZE_12K))) > HAL_HOST_BOUNCE_BUF_LEN) {
 		pr_err("%s Cannot accomodate tx_bufs: %d, frames/desc: %d and rx_bufs_2k: %d rx_bufs_12k: %d in %d UCCP Host RAM\n",
 		       hal_name, tx_bufs, NUM_FRAMES_IN_TX_DESC,
-		       rx_bufs_2k, rx_bufs_12k, HAL_HOST_UCCP_RAM_LEN);
+		       rx_bufs_2k, rx_bufs_12k, HAL_HOST_BOUNCE_BUF_LEN);
 
 		goto err;
 	}
@@ -1570,20 +1801,17 @@ static int hal_init_bufs(unsigned int tx_bufs,
 		goto err;
 	}
 
-	memset(hpriv->tx_buf_info, 0, (tx_bufs * NUM_FRAMES_IN_TX_DESC *
-				       sizeof(struct buf_info)));
-
 	rx_max_data_size = MAX_DATA_SIZE_2K;
 
 	for (cmd_count = 0; cmd_count < cmd_buf_count; cmd_count++) {
 		memset(&cmd_rx, 0, sizeof(struct cmd_hal));
 
-		pr_debug("%s: Loop :%d: rx_max_data_size: %d\n",
+		UCCP_DEBUG_HAL("%s: Loop :%d: rx_max_data_size: %d\n",
 			 hal_name, cmd_count, rx_max_data_size);
 
 		for (count = 0; count < MAX_RX_BUF_PTR_PER_CMD; count++,
 		     pkt_desc++) {
-			if (pkt_desc >= hpriv->rx_bufs_2k)
+			if (pkt_desc < hpriv->rx_bufs_12k)
 				rx_max_data_size = MAX_DATA_SIZE_12K;
 
 			result = init_rx_buf(pkt_desc,
@@ -1613,7 +1841,7 @@ static int hal_init_bufs(unsigned int tx_bufs,
 		memcpy(skb_put(nbuf, sizeof(struct cmd_hal)),
 		       (unsigned char *)&cmd_rx, sizeof(struct cmd_hal));
 		hal_cmd_sent--;
-		hostport_send(hpriv, nbuf);
+		hostport_send_head(hpriv, nbuf);
 	}
 
 	return 0;
@@ -1634,8 +1862,8 @@ int hal_map_tx_buf(int pkt_desc, int frame_id, unsigned char *data, int len)
 	unsigned int index = (pkt_desc * NUM_FRAMES_IN_TX_DESC) + frame_id;
 	void __iomem  *tx_address = NULL;
 	int i, j;
-
 	dma_addr_t dma_buf = 0;
+	dma_addr_t curr_buf = 0;
 
 	/* For QoS Null frames we dont try to map the frame since the data len
 	 * will be 0 and there is nothing for the FW to process
@@ -1657,14 +1885,20 @@ int hal_map_tx_buf(int pkt_desc, int frame_id, unsigned char *data, int len)
 
 		for (i = 0; i < NUM_TX_DESC; i++) {
 			for (j = 0; j < NUM_FRAMES_IN_TX_DESC; j++) {
-				pr_debug("%s: TX: descriptor: %d and frame: %d dma_buf: 0x%x\n",
-					 __func__, i, j,
-					 hpriv->tx_buf_info[i + j].dma_buf);
+				UCCP_DEBUG_HAL("%s: TX: descriptor: %d ",
+					       __func__, i);
+				curr_buf = hpriv->tx_buf_info[i + j].dma_buf;
+				UCCP_DEBUG_HAL("and frame: %d dma_buf: 0x%x\n",
+					       j,
+					       curr_buf);
 			}
 		}
+
 		for (i = 0; i < 80; i++) {
-			pr_debug("%s: RX: descriptor: %d dma_buf: 0x%x\n",
-				 __func__, i, hpriv->rx_buf_info[i].dma_buf);
+			UCCP_DEBUG_HAL("%s: RX: descriptor: %d dma_buf: 0x%x\n",
+				       __func__,
+				       i,
+				       hpriv->rx_buf_info[i].dma_buf);
 		}
 
 		return -1;
@@ -1752,7 +1986,7 @@ static int is_mem_bounce(void *virt_addr, int len)
 
 	if (phy_addr >= phy_addr_start &&
 	   (phy_addr + len) < (phy_addr_start +
-			       HAL_HOST_UCCP_RAM_LEN))
+			       HAL_HOST_BOUNCE_BUF_LEN))
 		return 1;
 
 	pr_warn("%s: Warning:Address is out of Bounce memory region\n",
@@ -1787,14 +2021,14 @@ static int init_rx_buf(int pkt_desc,
 		src_ptr = rx_skb->data;
 		alloc_skb_dma_region++;
 	} else {
-		if (pkt_desc < hpriv->rx_bufs_2k) {
+		if (pkt_desc < hpriv->rx_bufs_12k) {
 			src_ptr = hpriv->rx_base_addr_uccp_host_ram +
-				  (pkt_desc * MAX_DATA_SIZE_2K);
+				  (pkt_desc * MAX_DATA_SIZE_12K);
 		} else {
 			src_ptr = hpriv->rx_base_addr_uccp_host_ram +
-				  (hpriv->rx_bufs_2k * MAX_DATA_SIZE_2K) +
-				  ((pkt_desc - hpriv->rx_bufs_2k) *
-				   MAX_DATA_SIZE_12K);
+				  (hpriv->rx_bufs_12k * MAX_DATA_SIZE_12K) +
+				  ((pkt_desc - hpriv->rx_bufs_12k) *
+				   MAX_DATA_SIZE_2K);
 		}
 
 		if (!is_mem_bounce(src_ptr, max_data_size)) {
@@ -1829,15 +2063,18 @@ static int init_rx_buf(int pkt_desc,
 
 	return 0;
 }
+
 void hal_set_mem_region(unsigned int addr)
 {
+
 }
+
 void hal_request_mem_regions(unsigned char **gram_addr,
-			     unsigned char **slave_addr,
+			     unsigned char **sysbus_addr,
 			     unsigned char **gram_b4_addr)
 {
 	*gram_addr = (unsigned char *)hpriv->gram_base_addr;
-	*slave_addr = (unsigned char *)hpriv->uccp_slave_base_addr;
+	*sysbus_addr = (unsigned char *)hpriv->uccp_sysbus_base_addr;
 	*gram_b4_addr = (unsigned char *)hpriv->gram_b4_addr;
 }
 
@@ -1868,16 +2105,45 @@ struct hal_ops_tag hal_ops = {
 	.request_mem_regions	= hal_request_mem_regions,
 	.enable_irq_wake = hal_enable_irq_wake,
 	.disable_irq_wake = hal_disable_irq_wake,
+	.get_dump_gram		= hal_get_dump_gram,
+	.get_dump_core		= hal_get_dump_core,
+	.get_dump_perip		= hal_get_dump_perip,
+	.get_dump_sysbus	= hal_get_dump_sysbus,
+	.get_dump_len		= hal_get_dump_len,
 };
 
+#ifdef CONFIG_PM
+static int host_suspend(void)
+{
+	if ((img_suspend_status == 1) && (rx_interrupt_status == 1)) {
+		pr_err("%s: Interrupt raised during Suspend, cancel suspend",
+				hal_name);
+		return -EBUSY;
+	} else {
+		return 0;
+	}
+}
+#else
+	#define host_suspend		NULL
+#endif
+
+static struct syscore_ops host_syscore_ops = {
+	.suspend = host_suspend,
+};
 
 static int __init hostport_init(void)
 {
-	return platform_driver_register(&img_uccp_driver);
+	int ret = 0;
+
+	ret = platform_driver_register(&img_uccp_driver);
+	register_syscore_ops(&host_syscore_ops);
+
+	return ret;
 }
 
 static void __exit hostport_exit(void)
 {
+	unregister_syscore_ops(&host_syscore_ops);
 	hal_ops.deinit(NULL);
 }
 
