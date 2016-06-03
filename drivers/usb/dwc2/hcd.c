@@ -2983,6 +2983,7 @@ error1:
 	dev_err(hsotg->dev, "%s() FAILED, returning %d\n", __func__, retval);
 	return retval;
 }
+EXPORT_SYMBOL_GPL(dwc2_hcd_init);
 
 /*
  * Removes the HCD.
@@ -3016,3 +3017,4 @@ void dwc2_hcd_remove(struct dwc2_hsotg *hsotg)
 	kfree(hsotg->frame_num_array);
 #endif
 }
+EXPORT_SYMBOL_GPL(dwc2_hcd_remove);
