@@ -377,6 +377,7 @@ config MACH_LOONGSON64
 
 config MACH_PISTACHIO
 	bool "IMG Pistachio SoC based boards"
+	select GENERIC_ISA_DMA
 	select ARCH_REQUIRE_GPIOLIB
 	select BOOT_ELF32
 	select BOOT_RAW

@@ -87,7 +87,7 @@
 /* don't care; ISA bus master won't work, ISA slave DMA supports 32bit addr */
 #define MAX_DMA_ADDRESS		PAGE_OFFSET
 #else
-#define MAX_DMA_ADDRESS		(PAGE_OFFSET + 0x01000000)
+#define MAX_DMA_ADDRESS		(PAGE_OFFSET + 0x04000000)
 #endif
 #define MAX_DMA_PFN		PFN_DOWN(virt_to_phys((void *)MAX_DMA_ADDRESS))
 
