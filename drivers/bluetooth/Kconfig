@@ -285,4 +285,13 @@ config BT_WILINK
 	  Say Y here to compile support for Texas Instrument's WiLink7 driver
 	  into the kernel or say M to compile it as module (btwilink).
 
+config BT_IMG
+	tristate "Imagination Technologies Bluetooth driver"
+	depends on BT_HCIUART && BT_HCIUART_H4 && IMG_HOSTPORT
+	help
+	  Imagination Technologies Bluetooth driver which exposes UCCP bluetooth
+	  subsystem as a serial device.
+
+	  Say Y here to compile support for Imagination Technologies' Bluetooth
+	  driver into the kernel or say M to compile it as module (img-bt).
 endmenu

@@ -1,0 +1,5 @@
+config ATU
+	tristate "ATU Clock IP"
+	---help---
+	  Say Y here if you want to use ATU Clock IP.
+	  If you select to build as a module it will be called atu_clk_driver.

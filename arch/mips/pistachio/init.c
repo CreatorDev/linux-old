@@ -2,6 +2,7 @@
  * Pistachio platform setup
  *
  * Copyright (C) 2014 Google, Inc.
+ * Copyright (C) 2016 Imagination Technologies
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
@@ -9,10 +10,12 @@
  */
 
 #include <linux/init.h>
+#include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/of_address.h>
 #include <linux/of_fdt.h>
 #include <linux/of_platform.h>
+#include <linux/platform_device.h>
 
 #include <asm/cacheflush.h>
 #include <asm/dma-coherence.h>
@@ -24,9 +27,28 @@
 #include <asm/smp-ops.h>
 #include <asm/traps.h>
 
+/*
+ * Core revision register decoding
+ * Bits 23 to 20: Major rev
+ * Bits 15 to 8: Minor rev
+ * Bits 7 to 0: Maintenance rev
+ */
+#define PISTACHIO_CORE_REV_REG	0xB81483D0
+#define PISTACHIO_CORE_REV_A1	0x00100006
+#define PISTACHIO_CORE_REV_B0	0x00100106
+
 const char *get_system_type(void)
 {
-	return "IMG Pistachio SoC";
+	u32 core_rev;
+
+	core_rev = __raw_readl((const void *)PISTACHIO_CORE_REV_REG);
+
+	if (core_rev == PISTACHIO_CORE_REV_B0)
+		return "IMG Pistachio SoC (B0)";
+	else if (core_rev == PISTACHIO_CORE_REV_A1)
+		return "IMG_Pistachio SoC (A1)";
+	else
+		return "IMG_Pistachio SoC";
 }
 
 static void __init plat_setup_iocoherency(void)
@@ -104,6 +126,8 @@ void __init prom_init(void)
 	mips_cm_probe();
 	mips_cpc_probe();
 	register_cps_smp_ops();
+
+	pr_info("SoC Type: %s\n", get_system_type());
 }
 
 void __init prom_free_prom_memory(void)
@@ -125,6 +149,8 @@ static int __init plat_of_setup(void)
 
 	if (of_platform_populate(NULL, of_default_bus_match_table, NULL, NULL))
 		panic("Failed to populate DT");
+
+	platform_device_register_simple("cpufreq-dt", -1, NULL, 0);
 
 	return 0;
 }

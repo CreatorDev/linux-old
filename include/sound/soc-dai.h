@@ -190,6 +190,11 @@ struct snd_soc_dai_ops {
 	 */
 	snd_pcm_sframes_t (*delay)(struct snd_pcm_substream *,
 		struct snd_soc_dai *);
+
+	int (*start_at)(struct snd_pcm_substream *, struct snd_soc_dai *,
+		int, const struct timespec *);
+	int (*start_at_abort)(struct snd_pcm_substream *,
+		struct snd_soc_dai *);
 };
 
 /*

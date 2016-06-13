@@ -21,6 +21,7 @@
 #include <linux/skbuff.h>
 #include <linux/of_gpio.h>
 #include <linux/ieee802154.h>
+#include <linux/clk-provider.h>
 
 #include <net/mac802154.h>
 #include <net/cfg802154.h>
@@ -35,6 +36,11 @@
 #define	CC2520_RAM_SIZE		640
 #define	CC2520_FIFO_SIZE	128
 
+#define	CC2520_CRYSTAL_FREQ		(32000000)
+#define	CC2520_EXTCLOCK_DEFAULT_FREQ	(1000000)
+#define	CC2520_EXTCLOCK_MAX_FREQ	(16000000)
+#define	CC2520_EXTCLOCK_MIN_FREQ	(1000000)
+
 #define	CC2520RAM_TXFIFO	0x100
 #define	CC2520RAM_RXFIFO	0x180
 #define	CC2520RAM_IEEEADDR	0x3EA
@@ -47,6 +53,10 @@
 #define	CC2520_STATUS_XOSC32M_STABLE	BIT(7)
 #define	CC2520_STATUS_RSSI_VALID	BIT(6)
 #define	CC2520_STATUS_TX_UNDERFLOW	BIT(3)
+
+/* extclock reg */
+#define	CC2520_EXTCLOCK_ENABLE		BIT(5)
+#define	CC2520_EXTCLOCK_MAX_DIV_FACTOR	(32)
 
 /* IEEE-802.15.4 defined constants (2.4 GHz logical channels) */
 #define	CC2520_MINCHANNEL		11
@@ -200,6 +210,10 @@ struct cc2520_private {
 	struct work_struct fifop_irqwork;/* Workqueue for FIFOP */
 	spinlock_t lock;		/* Lock for is_tx*/
 	struct completion tx_complete;	/* Work completion for Tx */
+	bool disable_tx;		/* don't send any packets */
+	bool disable_rx;		/* disable rx */
+	bool started;			/* Flag to know if device is up */
+	struct clk *clk;		/* external clock */
 };
 
 /* Generic Functions */
@@ -454,12 +468,33 @@ cc2520_read_rxfifo(struct cc2520_private *priv, u8 *data, u8 len, u8 *lqi)
 
 static int cc2520_start(struct ieee802154_hw *hw)
 {
-	return cc2520_cmd_strobe(hw->priv, CC2520_CMD_SRXON);
+	struct cc2520_private *priv = hw->priv;
+	int ret;
+
+	if (priv->disable_rx) {
+		/* disable enabling of RX after TX
+		 * SET_RXENMASK_ON_TX = 0 in FRMCTRL1
+		 */
+		ret = cc2520_write_register(priv, CC2520_FRMCTRL1, 0x02);
+	} else {
+		/* enable RX after TX
+		 * SET_RXENMASK_ON_TX = 1 in FRMCTRL1
+		 */
+		ret = cc2520_write_register(priv, CC2520_FRMCTRL1, 0x03);
+		if (ret)
+			return ret;
+		ret = cc2520_cmd_strobe(priv, CC2520_CMD_SRXON);
+	}
+	priv->started = true;
+	return ret;
 }
 
 static void cc2520_stop(struct ieee802154_hw *hw)
 {
-	cc2520_cmd_strobe(hw->priv, CC2520_CMD_SRFOFF);
+	struct cc2520_private *priv = hw->priv;
+
+	cc2520_cmd_strobe(priv, CC2520_CMD_SRFOFF);
+	priv->started = false;
 }
 
 static int
@@ -469,6 +504,12 @@ cc2520_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	unsigned long flags;
 	int rc;
 	u8 status = 0;
+
+	/* there is no command to disable tx in cc2520,
+	 * so not sending any packets would mean disable tx
+	 */
+	if (priv->disable_tx)
+		return 0;
 
 	rc = cc2520_cmd_strobe(priv, CC2520_CMD_SFLUSHTX);
 	if (rc)
@@ -492,7 +533,12 @@ cc2520_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	priv->is_tx = 1;
 	spin_unlock_irqrestore(&priv->lock, flags);
 
-	rc = cc2520_cmd_strobe(priv, CC2520_CMD_STXONCCA);
+	/* if rx is disabled then CCA is always low, then don't use TXONCCA */
+	if (!priv->disable_rx)
+		rc = cc2520_cmd_strobe(priv, CC2520_CMD_STXONCCA);
+	else
+		rc = cc2520_cmd_strobe(priv, CC2520_CMD_STXON);
+
 	if (rc)
 		goto err;
 
@@ -501,7 +547,9 @@ cc2520_tx(struct ieee802154_hw *hw, struct sk_buff *skb)
 		goto err;
 
 	cc2520_cmd_strobe(priv, CC2520_CMD_SFLUSHTX);
-	cc2520_cmd_strobe(priv, CC2520_CMD_SRXON);
+
+	if (!priv->disable_rx)
+		cc2520_cmd_strobe(priv, CC2520_CMD_SRXON);
 
 	return rc;
 err:
@@ -737,10 +785,49 @@ static int cc2520_get_platform_data(struct spi_device *spi,
 	pdata->cca = of_get_named_gpio(np, "cca-gpio", 0);
 	pdata->vreg = of_get_named_gpio(np, "vreg-gpio", 0);
 	pdata->reset = of_get_named_gpio(np, "reset-gpio", 0);
-
 	pdata->amplified = of_property_read_bool(np, "amplified");
+	if (of_property_read_u32(np, "extclock-freq", &pdata->extclockfreq)) {
+		/* if extclock-freq is not specified,
+		 * default to 1MHz(reset value)
+		 */
+		pdata->extclockfreq = CC2520_EXTCLOCK_DEFAULT_FREQ;
+	} else
+		pdata->registerclk = true;
 
 	return 0;
+}
+
+static int cc2520_register_clk(struct spi_device *spi,
+			       struct cc2520_platform_data *pdata)
+{
+	struct device_node *np = spi->dev.of_node;
+	struct cc2520_private *priv = spi_get_drvdata(spi);
+	int ret = 0;
+
+	if (pdata->registerclk) {
+		if (np) {
+			priv->clk = clk_register_fixed_rate(&spi->dev, np->name,
+					NULL, CLK_IS_ROOT, pdata->extclockfreq);
+
+			if (!IS_ERR(priv->clk)) {
+				ret = of_clk_add_provider(np,
+							  of_clk_src_simple_get,
+							  priv->clk);
+				if (ret) {
+					clk_unregister(priv->clk);
+					dev_err(&spi->dev,
+						"Failed to add clk provider\n");
+				}
+			} else {
+				dev_err(&spi->dev, "Failed to register clk\n");
+				ret = PTR_ERR(priv->clk);
+			}
+		} else
+			dev_err(&spi->dev, "No device node found, ext-clk won't"
+						" be registered\n");
+	}
+
+	return ret;
 }
 
 static int cc2520_hw_init(struct cc2520_private *priv)
@@ -749,6 +836,7 @@ static int cc2520_hw_init(struct cc2520_private *priv)
 	int ret;
 	int timeout = 100;
 	struct cc2520_platform_data pdata;
+	u8 extclock_reg;
 
 	ret = cc2520_get_platform_data(priv->spi, &pdata);
 	if (ret)
@@ -868,11 +956,99 @@ static int cc2520_hw_init(struct cc2520_private *priv)
 	if (ret)
 		goto err_ret;
 
+	/* Configure EXTCLOCK register based on 'extclock-freq' property */
+	if (pdata.extclockfreq == 0) {
+		extclock_reg = 0;
+	} else if (pdata.extclockfreq >= CC2520_EXTCLOCK_MIN_FREQ &&
+		   pdata.extclockfreq <= CC2520_EXTCLOCK_MAX_FREQ) {
+		extclock_reg = (CC2520_EXTCLOCK_ENABLE |
+			       (CC2520_EXTCLOCK_MAX_DIV_FACTOR -
+			       (DIV_ROUND_CLOSEST(CC2520_CRYSTAL_FREQ,
+						  pdata.extclockfreq))));
+	} else {
+		dev_err(&priv->spi->dev, "Invalid value specified for 'extclock-freq'\n");
+		ret = -EINVAL;
+		goto err_ret;
+	}
+
+	ret = cc2520_write_register(priv, CC2520_EXTCLOCK, extclock_reg);
+	if (ret)
+		goto err_ret;
+
 	return 0;
 
 err_ret:
 	return ret;
 }
+
+ssize_t disable_tx_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct cc2520_private *priv = spi_get_drvdata(spi);
+
+	return sprintf(buf, "%u\n", priv->disable_tx);
+}
+
+ssize_t disable_rx_show(struct device *dev, struct device_attribute *attr,
+			char *buf)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct cc2520_private *priv = spi_get_drvdata(spi);
+
+	return sprintf(buf, "%u\n", priv->disable_rx);
+}
+
+static ssize_t attr_store(const struct cc2520_private *priv, const char *buf,
+			  size_t count, bool *priv_attr)
+{
+	int ret;
+	unsigned long state;
+
+	if (priv->started)
+		return -EBUSY;
+
+	ret = kstrtoul(buf, 10, &state);
+	if (ret)
+		return ret;
+
+	if (state)
+		*priv_attr = true;
+	else
+		*priv_attr = false;
+	return count;
+}
+
+ssize_t disable_tx_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct cc2520_private *priv = spi_get_drvdata(spi);
+
+	return attr_store(priv, buf, count, &priv->disable_tx);
+}
+
+ssize_t disable_rx_store(struct device *dev, struct device_attribute *attr,
+			 const char *buf, size_t count)
+{
+	struct spi_device *spi = to_spi_device(dev);
+	struct cc2520_private *priv = spi_get_drvdata(spi);
+
+	return attr_store(priv, buf, count, &priv->disable_rx);
+}
+
+static DEVICE_ATTR_RW(disable_tx);
+static DEVICE_ATTR_RW(disable_rx);
+
+static struct attribute *dev_attrs[] = {
+	&dev_attr_disable_tx.attr,
+	&dev_attr_disable_rx.attr,
+	NULL,
+};
+
+static struct attribute_group dev_attr_group = {
+	.attrs = dev_attrs,
+};
 
 static int cc2520_probe(struct spi_device *spi)
 {
@@ -1009,7 +1185,22 @@ static int cc2520_probe(struct spi_device *spi)
 	if (ret)
 		goto err_hw_init;
 
+	ret = sysfs_create_group(&spi->dev.kobj, &dev_attr_group);
+	if (ret)
+		goto err_free_device;
+
+	ret = cc2520_register_clk(spi, &pdata);
+	if (ret)
+		goto err_free_sysfs;
+
 	return 0;
+
+err_free_sysfs:
+	sysfs_remove_group(&spi->dev.kobj, &dev_attr_group);
+
+err_free_device:
+	ieee802154_unregister_hw(priv->hw);
+	ieee802154_free_hw(priv->hw);
 
 err_hw_init:
 	mutex_destroy(&priv->buffer_mutex);
@@ -1021,6 +1212,12 @@ static int cc2520_remove(struct spi_device *spi)
 {
 	struct cc2520_private *priv = spi_get_drvdata(spi);
 
+	if (priv->clk) {
+		of_clk_del_provider(spi->dev.of_node);
+		clk_unregister(priv->clk);
+	}
+
+	sysfs_remove_group(&spi->dev.kobj, &dev_attr_group);
 	mutex_destroy(&priv->buffer_mutex);
 	flush_work(&priv->fifop_irqwork);
 

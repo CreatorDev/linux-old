@@ -291,6 +291,7 @@ typedef int __bitwise snd_pcm_state_t;
 #define	SNDRV_PCM_STATE_PAUSED		((__force snd_pcm_state_t) 6) /* stream is paused */
 #define	SNDRV_PCM_STATE_SUSPENDED	((__force snd_pcm_state_t) 7) /* hardware is suspended */
 #define	SNDRV_PCM_STATE_DISCONNECTED	((__force snd_pcm_state_t) 8) /* hardware is disconnected */
+#define	SNDRV_PCM_STATE_STARTING	((__force snd_pcm_state_t) 9) /* stream start has been delegated to the kernel */
 #define	SNDRV_PCM_STATE_LAST		SNDRV_PCM_STATE_DISCONNECTED
 
 enum {
@@ -501,6 +502,18 @@ enum {
 	SNDRV_PCM_TSTAMP_TYPE_LAST = SNDRV_PCM_TSTAMP_TYPE_MONOTONIC_RAW,
 };
 
+enum {
+	SNDRV_PCM_CLOCK_CLASS_SYSTEM = 0,
+	SNDRV_PCM_CLOCK_CLASS_AUDIO,
+	SNDRV_PCM_CLOCK_CLASS_LAST = SNDRV_PCM_CLOCK_CLASS_AUDIO,
+};
+
+struct snd_startat {
+	int clock_class;
+	int clock_type;
+	struct timespec start_time;
+};
+
 /* channel positions */
 enum {
 	SNDRV_CHMAP_UNKNOWN = 0,
@@ -580,6 +593,8 @@ enum {
 #define SNDRV_PCM_IOCTL_READN_FRAMES	_IOR('A', 0x53, struct snd_xfern)
 #define SNDRV_PCM_IOCTL_LINK		_IOW('A', 0x60, int)
 #define SNDRV_PCM_IOCTL_UNLINK		_IO('A', 0x61)
+#define SNDRV_PCM_IOCTL_START_AT        _IOW('A', 0x62, struct snd_startat)
+
 
 /*****************************************************************************
  *                                                                           *

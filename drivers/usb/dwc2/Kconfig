@@ -53,9 +53,9 @@ endchoice
 config USB_DWC2_PLATFORM
 	tristate "DWC2 Platform"
 	default USB_DWC2_HOST || USB_DWC2_PERIPHERAL
-        help
-          The Designware USB2.0 platform interface module for
-          controllers directly connected to the CPU.
+	help
+		The Designware USB2.0 platform interface module for
+		controllers directly connected to the CPU.
 
 config USB_DWC2_PCI
 	tristate "DWC2 PCI"

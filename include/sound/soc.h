@@ -702,6 +702,9 @@ struct snd_soc_ops {
 	int (*hw_free)(struct snd_pcm_substream *);
 	int (*prepare)(struct snd_pcm_substream *);
 	int (*trigger)(struct snd_pcm_substream *, int);
+	int (*start_at)(struct snd_pcm_substream *, int,
+		const struct timespec *);
+	int (*start_at_abort)(struct snd_pcm_substream *);
 };
 
 struct snd_soc_compr_ops {

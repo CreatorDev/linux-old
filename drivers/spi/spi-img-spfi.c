@@ -40,7 +40,7 @@
 #define SPFI_CONTROL_SOFT_RESET			BIT(11)
 #define SPFI_CONTROL_SEND_DMA			BIT(10)
 #define SPFI_CONTROL_GET_DMA			BIT(9)
-#define SPFI_CONTROL_SE			BIT(8)
+#define SPFI_CONTROL_SE				BIT(8)
 #define SPFI_CONTROL_TMODE_SHIFT		5
 #define SPFI_CONTROL_TMODE_MASK			0x7
 #define SPFI_CONTROL_TMODE_SINGLE		0
@@ -51,6 +51,10 @@
 #define SPFI_TRANSACTION			0x18
 #define SPFI_TRANSACTION_TSIZE_SHIFT		16
 #define SPFI_TRANSACTION_TSIZE_MASK		0xffff
+#define SPFI_TRANSACTION_CMD_SHIFT		13
+#define SPFI_TRANSACTION_CMD_MASK		0x1
+#define SPFI_TRANSACTION_ADDR_SHIFT		10
+#define SPFI_TRANSACTION_ADDR_MASK		0x7
 
 #define SPFI_PORT_STATE				0x1c
 #define SPFI_PORT_STATE_DEV_SEL_SHIFT		20
@@ -87,6 +91,7 @@
  */
 #define SPFI_32BIT_FIFO_SIZE			64
 #define SPFI_8BIT_FIFO_SIZE			16
+#define SPFI_DATA_REQUEST_MAX_SIZE		8
 
 struct img_spfi {
 	struct device *dev;
@@ -103,6 +108,8 @@ struct img_spfi {
 	struct dma_chan *tx_ch;
 	bool tx_dma_busy;
 	bool rx_dma_busy;
+
+	bool complete;
 };
 
 struct img_spfi_device_data {
@@ -123,9 +130,11 @@ static inline void spfi_start(struct img_spfi *spfi)
 {
 	u32 val;
 
-	val = spfi_readl(spfi, SPFI_CONTROL);
-	val |= SPFI_CONTROL_SPFI_EN;
-	spfi_writel(spfi, val, SPFI_CONTROL);
+	if (spfi->complete) {
+		val = spfi_readl(spfi, SPFI_CONTROL);
+		val |= SPFI_CONTROL_SPFI_EN;
+		spfi_writel(spfi, val, SPFI_CONTROL);
+	}
 }
 
 static inline void spfi_reset(struct img_spfi *spfi)
@@ -138,12 +147,21 @@ static int spfi_wait_all_done(struct img_spfi *spfi)
 {
 	unsigned long timeout = jiffies + msecs_to_jiffies(50);
 
+	if (!(spfi->complete))
+		return 0;
+
 	while (time_before(jiffies, timeout)) {
 		u32 status = spfi_readl(spfi, SPFI_INTERRUPT_STATUS);
 
 		if (status & SPFI_INTERRUPT_ALLDONETRIG) {
 			spfi_writel(spfi, SPFI_INTERRUPT_ALLDONETRIG,
 				    SPFI_INTERRUPT_CLEAR);
+			/*
+			 * Disable SPFI for it not to interfere with
+			 * pending transactions
+			 */
+			spfi_writel(spfi, spfi_readl(spfi, SPFI_CONTROL)
+			& ~SPFI_CONTROL_SPFI_EN, SPFI_CONTROL);
 			return 0;
 		}
 		cpu_relax();
@@ -418,15 +436,23 @@ static int img_spfi_prepare(struct spi_master *master, struct spi_message *msg)
 	struct img_spfi *spfi = spi_master_get_devdata(master);
 	u32 val;
 
+	/*
+	 * The chip select line is controlled externally so
+	 * we can use the CS0 configuration for all devices
+	 */
 	val = spfi_readl(spfi, SPFI_PORT_STATE);
+
+	/* 0 for device selection */
+	val &= ~(SPFI_PORT_STATE_DEV_SEL_MASK <<
+		 SPFI_PORT_STATE_DEV_SEL_SHIFT);
 	if (msg->spi->mode & SPI_CPHA)
-		val |= SPFI_PORT_STATE_CK_PHASE(msg->spi->chip_select);
+		val |= SPFI_PORT_STATE_CK_PHASE(0);
 	else
-		val &= ~SPFI_PORT_STATE_CK_PHASE(msg->spi->chip_select);
+		val &= ~SPFI_PORT_STATE_CK_PHASE(0);
 	if (msg->spi->mode & SPI_CPOL)
-		val |= SPFI_PORT_STATE_CK_POL(msg->spi->chip_select);
+		val |= SPFI_PORT_STATE_CK_POL(0);
 	else
-		val &= ~SPFI_PORT_STATE_CK_POL(msg->spi->chip_select);
+		val &= ~SPFI_PORT_STATE_CK_POL(0);
 	spfi_writel(spfi, val, SPFI_PORT_STATE);
 
 	return 0;
@@ -494,35 +520,98 @@ static void img_spfi_config(struct spi_master *master, struct spi_device *spi,
 			    struct spi_transfer *xfer)
 {
 	struct img_spfi *spfi = spi_master_get_devdata(spi->master);
-	u32 val, div;
+	u32 val, div, transact;
+	bool is_pending;
 
 	/*
+	 * For read or write transfers of less than 8 bytes (cmd = 1 byte,
+	 * addr up to 7 bytes), SPFI will be configured, but not enabled
+	 * (unless it is the last transfer in the queue).The transfer will
+	 * be enabled by the subsequent transfer.
+	 * A pending transfer is determined by the content of the
+	 * transaction register: if command part is set and tsize
+	 * is not
+	 */
+	transact = spfi_readl(spfi, SPFI_TRANSACTION);
+	is_pending = ((transact >> SPFI_TRANSACTION_CMD_SHIFT) &
+			SPFI_TRANSACTION_CMD_MASK) &&
+			(!((transact >> SPFI_TRANSACTION_TSIZE_SHIFT) &
+			SPFI_TRANSACTION_TSIZE_MASK));
+
+	/* If there are no pending transactions it's OK to soft reset */
+	if (!is_pending) {
+		/* Start the transaction from a known (reset) state */
+		spfi_reset(spfi);
+	}
+
+	/*
+	 * Before anything else, set up parameters.
 	 * output = spfi_clk * (BITCLK / 512), where BITCLK must be a
 	 * power of 2 up to 128
 	 */
 	div = DIV_ROUND_UP(clk_get_rate(spfi->spfi_clk), xfer->speed_hz);
 	div = clamp(512 / (1 << get_count_order(div)), 1, 128);
 
-	val = spfi_readl(spfi, SPFI_DEVICE_PARAMETER(spi->chip_select));
+	/*
+	 * The chip select line is controlled externally so
+	 * we can use the CS0 parameters for all devices
+	 */
+	val = spfi_readl(spfi, SPFI_DEVICE_PARAMETER(0));
 	val &= ~(SPFI_DEVICE_PARAMETER_BITCLK_MASK <<
 		 SPFI_DEVICE_PARAMETER_BITCLK_SHIFT);
 	val |= div << SPFI_DEVICE_PARAMETER_BITCLK_SHIFT;
-	spfi_writel(spfi, val, SPFI_DEVICE_PARAMETER(spi->chip_select));
+	spfi_writel(spfi, val, SPFI_DEVICE_PARAMETER(0));
 
-	spfi_writel(spfi, xfer->len << SPFI_TRANSACTION_TSIZE_SHIFT,
-		    SPFI_TRANSACTION);
+	if (!list_is_last(&xfer->transfer_list, &master->cur_msg->transfers) &&
+		/*
+		 * For duplex mode (both the tx and rx buffers are !NULL) the
+		 * CMD, ADDR, and DUMMY byte parts of the transaction register
+		 * should always be 0 and therefore the pending transfer
+		 * technique cannot be used.
+		 */
+		(xfer->tx_buf) && (!xfer->rx_buf) &&
+		(xfer->len <= SPFI_DATA_REQUEST_MAX_SIZE) && !is_pending) {
+		transact = (1 & SPFI_TRANSACTION_CMD_MASK) <<
+			SPFI_TRANSACTION_CMD_SHIFT;
+		transact |= ((xfer->len - 1) & SPFI_TRANSACTION_ADDR_MASK) <<
+			SPFI_TRANSACTION_ADDR_SHIFT;
+		spfi->complete = false;
+	} else {
+		spfi->complete = true;
+		if (is_pending) {
+			if (xfer->tx_buf) {
+				/* Finish pending transfer first for transmit */
+				spfi_start(spfi);
+				spfi_wait_all_done(spfi);
+				spfi_writel(spfi, spfi_readl(spfi, SPFI_CONTROL) &
+				~SPFI_CONTROL_SPFI_EN, SPFI_CONTROL);
+				transact = 0;
+			}
+			/* Keep setup from pending transfer */
+			transact |= ((xfer->len & SPFI_TRANSACTION_TSIZE_MASK) <<
+				SPFI_TRANSACTION_TSIZE_SHIFT);
+		} else {
+			transact = ((xfer->len & SPFI_TRANSACTION_TSIZE_MASK) <<
+				SPFI_TRANSACTION_TSIZE_SHIFT);
+		}
+	}
+	spfi_writel(spfi, transact, SPFI_TRANSACTION);
 
 	val = spfi_readl(spfi, SPFI_CONTROL);
 	val &= ~(SPFI_CONTROL_SEND_DMA | SPFI_CONTROL_GET_DMA);
-	if (xfer->tx_buf)
+	/*
+	 * We set up send DMA for pending transfers also, as
+	 * those are always send transfers
+	 */
+	if ((xfer->tx_buf) || is_pending)
 		val |= SPFI_CONTROL_SEND_DMA;
 	if (xfer->rx_buf)
 		val |= SPFI_CONTROL_GET_DMA;
 	val &= ~(SPFI_CONTROL_TMODE_MASK << SPFI_CONTROL_TMODE_SHIFT);
-	if (xfer->tx_nbits == SPI_NBITS_DUAL &&
+	if (xfer->tx_nbits == SPI_NBITS_DUAL ||
 	    xfer->rx_nbits == SPI_NBITS_DUAL)
 		val |= SPFI_CONTROL_TMODE_DUAL << SPFI_CONTROL_TMODE_SHIFT;
-	else if (xfer->tx_nbits == SPI_NBITS_QUAD &&
+	else if (xfer->tx_nbits == SPI_NBITS_QUAD ||
 		 xfer->rx_nbits == SPI_NBITS_QUAD)
 		val |= SPFI_CONTROL_TMODE_QUAD << SPFI_CONTROL_TMODE_SHIFT;
 	val |= SPFI_CONTROL_SE;
@@ -581,6 +670,7 @@ static int img_spfi_probe(struct platform_device *pdev)
 	struct img_spfi *spfi;
 	struct resource *res;
 	int ret;
+	u32 max_speed_hz;
 
 	master = spi_alloc_master(&pdev->dev, sizeof(*spfi));
 	if (!master)
@@ -644,6 +734,20 @@ static int img_spfi_probe(struct platform_device *pdev)
 	master->bits_per_word_mask = SPI_BPW_MASK(32) | SPI_BPW_MASK(8);
 	master->max_speed_hz = clk_get_rate(spfi->spfi_clk) / 4;
 	master->min_speed_hz = clk_get_rate(spfi->spfi_clk) / 512;
+
+	/*
+	 * Maximum speed supported by spfi is limited to the lower value
+	 * between 1/4 of the SPFI clock or to "spfi-max-frequency"
+	 * defined in the device tree.
+	 * If no value is defined in the device tree assume the maximum
+	 * speed supported to be 1/4 of the SPFI clock.
+	 */
+	if (!of_property_read_u32(spfi->dev->of_node, "spfi-max-frequency",
+				  &max_speed_hz))
+	{
+		if (master->max_speed_hz > max_speed_hz)
+			master->max_speed_hz = max_speed_hz;
+	}
 
 	master->setup = img_spfi_setup;
 	master->cleanup = img_spfi_cleanup;

@@ -1298,6 +1298,14 @@ config RTC_DRV_GENERIC
 	  RTC abstraction. If you do not know what you are doing, you should
 	  just say Y.
 
+config RTC_DRV_PISTACHIO
+       tristate "PISTACHIO_RTC"
+       depends on MACH_PISTACHIO
+       help
+	 If you say Y here you will get access to the real time clock
+	 This RTC driver uses pistachio counter registers to provide
+	 a rtc abstraction.
+
 config RTC_DRV_PXA
        tristate "PXA27x/PXA3xx"
        depends on ARCH_PXA

@@ -1693,7 +1693,8 @@ static void stmmac_init_tx_coalesce(struct stmmac_priv *priv)
  *  0 on success and an appropriate (-)ve integer as defined in errno.h
  *  file on failure.
  */
-static int stmmac_hw_setup(struct net_device *dev, bool init_ptp)
+static int stmmac_hw_setup(struct net_device *dev, bool init_ptp,
+		bool init_debugfs)
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
 	int ret;
@@ -1737,9 +1738,11 @@ static int stmmac_hw_setup(struct net_device *dev, bool init_ptp)
 	}
 
 #ifdef CONFIG_DEBUG_FS
-	ret = stmmac_init_fs(dev);
-	if (ret < 0)
-		pr_warn("%s: failed debugFS registration\n", __func__);
+	if (init_debugfs) {
+		ret = stmmac_init_fs(dev);
+		if (ret < 0)
+			pr_warn("%s: failed debugFS registration\n", __func__);
+	}
 #endif
 	/* Start the ball rolling... */
 	pr_debug("%s: DMA RX/TX processes started...\n", dev->name);
@@ -1811,7 +1814,7 @@ static int stmmac_open(struct net_device *dev)
 		goto init_error;
 	}
 
-	ret = stmmac_hw_setup(dev, true);
+	ret = stmmac_hw_setup(dev, true, true);
 	if (ret < 0) {
 		pr_err("%s: Hw setup failed\n", __func__);
 		goto init_error;
@@ -3007,8 +3010,11 @@ int stmmac_suspend(struct net_device *ndev)
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	unsigned long flags;
 
-	if (!ndev || !netif_running(ndev))
+	if (!ndev || !netif_running(ndev)) {
+		clk_disable(priv->pclk);
+		clk_disable(priv->stmmac_clk);
 		return 0;
+	}
 
 	if (priv->phydev)
 		phy_stop(priv->phydev);
@@ -3025,6 +3031,10 @@ int stmmac_suspend(struct net_device *ndev)
 	priv->hw->dma->stop_rx(priv->ioaddr);
 
 	stmmac_clear_descriptors(priv);
+
+	/* Release the DMA TX/RX socket buffers */
+	dma_free_rx_skbufs(priv);
+	dma_free_tx_skbufs(priv);
 
 	/* Enable Power down mode by programming the PMT regs */
 	if (device_may_wakeup(priv->device)) {
@@ -3057,8 +3067,11 @@ int stmmac_resume(struct net_device *ndev)
 	struct stmmac_priv *priv = netdev_priv(ndev);
 	unsigned long flags;
 
-	if (!netif_running(ndev))
+	if (!netif_running(ndev)) {
+		clk_enable(priv->stmmac_clk);
+		clk_enable(priv->pclk);
 		return 0;
+	}
 
 	spin_lock_irqsave(&priv->lock, flags);
 
@@ -3084,7 +3097,7 @@ int stmmac_resume(struct net_device *ndev)
 	netif_device_attach(ndev);
 
 	init_dma_desc_rings(ndev, GFP_ATOMIC);
-	stmmac_hw_setup(ndev, false);
+	stmmac_hw_setup(ndev, false, false);
 	stmmac_init_tx_coalesce(priv);
 
 	napi_enable(&priv->napi);

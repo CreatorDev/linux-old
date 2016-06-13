@@ -32,6 +32,7 @@
 #include <sound/tlv.h>
 #include <linux/of.h>
 #include <linux/of_gpio.h>
+#include <linux/delay.h>
 
 #include "tpa6130a2.h"
 
@@ -316,6 +317,7 @@ static void tpa6130a2_channel_enable(u8 channel, int enable)
 		/* Unmute channel */
 		val = tpa6130a2_read(TPA6130A2_REG_VOL_MUTE);
 		val &= ~channel;
+		val |= 0x3F; /* max volume */
 		tpa6130a2_i2c_write(TPA6130A2_REG_VOL_MUTE, val);
 	} else {
 		/* Disable channel */
@@ -367,6 +369,51 @@ int tpa6130a2_add_controls(struct snd_soc_codec *codec)
 						ARRAY_SIZE(tpa6130a2_controls));
 }
 EXPORT_SYMBOL_GPL(tpa6130a2_add_controls);
+
+static const struct snd_soc_dapm_widget tpa6130a2_dapm_widgets[] = {
+	SND_SOC_DAPM_OUTPUT("OUTL"),
+	SND_SOC_DAPM_OUTPUT("OUTR"),
+
+	SND_SOC_DAPM_INPUT("INL"),
+	SND_SOC_DAPM_INPUT("INR"),
+};
+
+static const struct snd_soc_dapm_route tpa6130a2_dapm_routes[] = {
+	{ "OUTL", NULL, "INL" },
+	{ "OUTR", NULL, "INR" },
+};
+
+static const struct snd_soc_codec_driver tpa6130a2_driver = {
+	.controls = tpa6130a2_controls,
+	.num_controls = ARRAY_SIZE(tpa6130a2_controls),
+	.dapm_widgets = tpa6130a2_dapm_widgets,
+	.num_dapm_widgets = ARRAY_SIZE(tpa6130a2_dapm_widgets),
+	.dapm_routes = tpa6130a2_dapm_routes,
+	.num_dapm_routes = ARRAY_SIZE(tpa6130a2_dapm_routes),
+};
+
+static const struct snd_soc_dai_ops tpa6130a2_dai_ops = {
+
+};
+
+#define TPA6130A2_FORMATS (SNDRV_PCM_FMTBIT_S16_LE | \
+			 SNDRV_PCM_FMTBIT_S24_3LE | \
+			 SNDRV_PCM_FMTBIT_S24_LE | \
+			 SNDRV_PCM_FMTBIT_S32_LE)
+
+static struct snd_soc_dai_driver tpa6130a2_dais[] = {
+	{
+		.name = "tpa6130a2",
+		.playback = {
+			.stream_name = "Playback",
+			.channels_min = 1,
+			.channels_max = 2,
+			.rates = SNDRV_PCM_RATE_8000_192000,
+			.formats = TPA6130A2_FORMATS,
+		},
+		.ops = &tpa6130a2_dai_ops,
+	},
+};
 
 static int tpa6130a2_probe(struct i2c_client *client,
 			   const struct i2c_device_id *id)
@@ -441,7 +488,6 @@ static int tpa6130a2_probe(struct i2c_client *client,
 	if (ret != 0)
 		goto err_gpio;
 
-
 	/* Read version */
 	ret = tpa6130a2_i2c_read(TPA6130A2_REG_VERSION) &
 				 TPA6130A2_VERSION_MASK;
@@ -452,6 +498,13 @@ static int tpa6130a2_probe(struct i2c_client *client,
 	ret = tpa6130a2_power(0);
 	if (ret != 0)
 		goto err_gpio;
+
+	ret = snd_soc_register_codec(dev, &tpa6130a2_driver, tpa6130a2_dais,
+			ARRAY_SIZE(tpa6130a2_dais));
+	if (ret) {
+		dev_err(dev, "failed to register codec:%d\n", ret);
+		goto err_gpio;
+	}
 
 	return 0;
 
