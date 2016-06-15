@@ -833,6 +833,12 @@ struct ieee80211_sub_if_data {
 
 	unsigned long state;
 
+	unsigned int max_more_data_cnt;
+
+	unsigned int more_data_cnt;
+
+	unsigned int rx_packet_count;
+
 	char name[IFNAMSIZ];
 
 	/* Fragment table for host-based reassembly */
@@ -1309,7 +1315,10 @@ struct ieee80211_local {
 	struct ieee80211_sub_if_data *ps_sdata;
 	struct work_struct dynamic_ps_enable_work;
 	struct work_struct dynamic_ps_disable_work;
+	struct work_struct dynamic_ps_rx_recalc_ps_work;
 	struct timer_list dynamic_ps_timer;
+	struct timer_list dynamic_ps_rx_timer;
+	struct timer_list dynamic_ps_rx_traffic_timer;
 	struct notifier_block ifa_notifier;
 	struct notifier_block ifa6_notifier;
 
@@ -1846,7 +1855,11 @@ static inline int ieee80211_ac_from_tid(int tid)
 
 void ieee80211_dynamic_ps_enable_work(struct work_struct *work);
 void ieee80211_dynamic_ps_disable_work(struct work_struct *work);
+void ieee80211_dynamic_ps_rx_recalc_ps_work (struct work_struct *work);
 void ieee80211_dynamic_ps_timer(unsigned long data);
+void ieee80211_dynamic_ps_rx_timer(unsigned long data);
+void ieee80211_dynamic_ps_rx_traffic_timer(unsigned long data);
+
 void ieee80211_send_nullfunc(struct ieee80211_local *local,
 			     struct ieee80211_sub_if_data *sdata,
 			     bool powersave);
@@ -2023,7 +2036,7 @@ void ieee80211_dfs_cac_cancel(struct ieee80211_local *local);
 void ieee80211_dfs_radar_detected_work(struct work_struct *work);
 int ieee80211_send_action_csa(struct ieee80211_sub_if_data *sdata,
 			      struct cfg80211_csa_settings *csa_settings);
-
+bool ieee80211_powersave_allowed(struct ieee80211_sub_if_data *sdata);
 bool ieee80211_cs_valid(const struct ieee80211_cipher_scheme *cs);
 bool ieee80211_cs_list_valid(const struct ieee80211_cipher_scheme *cs, int n);
 const struct ieee80211_cipher_scheme *

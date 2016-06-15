@@ -464,6 +464,10 @@ static int __maybe_unused dwc2_suspend(struct device *dev)
 	struct dwc2_hsotg *dwc2 = dev_get_drvdata(dev);
 	int ret = 0;
 
+	/* PHY clocks needs to be active if device is connected */
+	if (dwc2_is_connected(dwc2))
+		return 0;
+
 	if (dwc2_is_device_mode(dwc2))
 		dwc2_hsotg_suspend(dwc2);
 

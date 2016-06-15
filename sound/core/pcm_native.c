@@ -36,6 +36,14 @@
 #include <sound/minors.h>
 #include <linux/uio.h>
 
+#if defined(CONFIG_HIGH_RES_TIMERS)
+#include <linux/hrtimer.h>
+#endif
+
+#if defined(CONFIG_MIPS) && defined(CONFIG_DMA_NONCOHERENT)
+#include <dma-coherence.h>
+#endif
+
 /*
  *  Compatibility
  */
@@ -277,7 +285,7 @@ static const char * const snd_pcm_hw_param_names[] = {
 };
 #endif
 
-int snd_pcm_hw_refine(struct snd_pcm_substream *substream, 
+int snd_pcm_hw_refine(struct snd_pcm_substream *substream,
 		      struct snd_pcm_hw_params *params)
 {
 	unsigned int k;
@@ -1028,7 +1036,7 @@ static int snd_pcm_action_nonatomic(struct action_ops *ops,
 /*
  * start callbacks
  */
-static int snd_pcm_pre_start(struct snd_pcm_substream *substream, int state)
+int snd_pcm_pre_start(struct snd_pcm_substream *substream, int state)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	if (runtime->status->state != SNDRV_PCM_STATE_PREPARED)
@@ -1040,21 +1048,24 @@ static int snd_pcm_pre_start(struct snd_pcm_substream *substream, int state)
 	runtime->trigger_master = substream;
 	return 0;
 }
+EXPORT_SYMBOL_GPL(snd_pcm_pre_start);
 
-static int snd_pcm_do_start(struct snd_pcm_substream *substream, int state)
+int snd_pcm_do_start(struct snd_pcm_substream *substream, int state)
 {
 	if (substream->runtime->trigger_master != substream)
 		return 0;
 	return substream->ops->trigger(substream, SNDRV_PCM_TRIGGER_START);
 }
+EXPORT_SYMBOL_GPL(snd_pcm_do_start);
 
-static void snd_pcm_undo_start(struct snd_pcm_substream *substream, int state)
+void snd_pcm_undo_start(struct snd_pcm_substream *substream, int state)
 {
 	if (substream->runtime->trigger_master == substream)
 		substream->ops->trigger(substream, SNDRV_PCM_TRIGGER_STOP);
 }
+EXPORT_SYMBOL_GPL(snd_pcm_undo_start);
 
-static void snd_pcm_post_start(struct snd_pcm_substream *substream, int state)
+void snd_pcm_post_start(struct snd_pcm_substream *substream, int state)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	snd_pcm_trigger_tstamp(substream);
@@ -1067,6 +1078,7 @@ static void snd_pcm_post_start(struct snd_pcm_substream *substream, int state)
 		snd_pcm_playback_silence(substream, ULONG_MAX);
 	snd_pcm_timer_notify(substream, SNDRV_TIMER_EVENT_MSTART);
 }
+EXPORT_SYMBOL_GPL(snd_pcm_post_start);
 
 static struct action_ops snd_pcm_action_start = {
 	.pre_action = snd_pcm_pre_start,
@@ -1074,6 +1086,185 @@ static struct action_ops snd_pcm_action_start = {
 	.undo_action = snd_pcm_undo_start,
 	.post_action = snd_pcm_post_start
 };
+
+void snd_pcm_start_at_cleanup(struct snd_pcm_substream *substream)
+{
+	substream->start_at_pending = 0;
+	wake_up(&substream->start_at_wait);
+}
+EXPORT_SYMBOL_GPL(snd_pcm_start_at_cleanup);
+
+void snd_pcm_start_at_trigger(struct snd_pcm_substream *substream)
+{
+	snd_pcm_stream_lock(substream);
+
+	if(substream->runtime->status->state == SNDRV_PCM_STATE_STARTING)
+		if(!snd_pcm_do_start(substream, SNDRV_PCM_STATE_RUNNING))
+			snd_pcm_post_start(substream, SNDRV_PCM_STATE_RUNNING);
+
+	snd_pcm_start_at_cleanup(substream);
+
+	snd_pcm_stream_unlock(substream);
+}
+EXPORT_SYMBOL_GPL(snd_pcm_start_at_trigger);
+
+#ifdef CONFIG_HIGH_RES_TIMERS
+static enum hrtimer_restart snd_pcm_do_start_time(struct hrtimer *timer)
+{
+	struct snd_pcm_substream *substream;
+
+	substream = container_of(timer, struct snd_pcm_substream,
+					start_at_timer);
+
+	snd_pcm_start_at_trigger(substream);
+
+	return HRTIMER_NORESTART;
+}
+#endif
+
+static int snd_pcm_startat_system(struct snd_pcm_substream *substream,
+	int clock_type, const struct timespec *start_time)
+{
+#ifdef CONFIG_HIGH_RES_TIMERS
+	struct timespec now;
+	clockid_t clock;
+
+	switch (clock_type) {
+	case SNDRV_PCM_TSTAMP_TYPE_GETTIMEOFDAY:
+		clock = CLOCK_REALTIME;
+		getnstimeofday(&now);
+		break;
+	case SNDRV_PCM_TSTAMP_TYPE_MONOTONIC:
+		clock = CLOCK_MONOTONIC;
+		ktime_get_ts(&now);
+		break;
+	default: /* unsupported clocks bounce off */
+		return -ENOSYS;
+	}
+
+	/* Check if start_time is in the past */
+	if (timespec_compare(&now, start_time) >= 0)
+		return -ETIME;
+
+	hrtimer_init(&substream->start_at_timer, clock, HRTIMER_MODE_ABS);
+	substream->start_at_timer.function = snd_pcm_do_start_time;
+
+	hrtimer_start(&substream->start_at_timer,
+			timespec_to_ktime(*start_time), HRTIMER_MODE_ABS);
+
+	return 0;
+#else
+	return -ENOSYS;
+#endif
+}
+
+static void snd_pcm_startat_system_cancel(struct snd_pcm_substream *substream)
+{
+#ifdef CONFIG_HIGH_RES_TIMERS
+	if(hrtimer_try_to_cancel(&substream->start_at_timer) == 1)
+		snd_pcm_start_at_cleanup(substream);
+#endif
+}
+
+static int snd_pcm_startat_audio(struct snd_pcm_substream *substream,
+	int clock_type, const struct timespec *start_time)
+{
+	if (substream->ops->start_at)
+		return substream->ops->start_at(substream, clock_type,
+			start_time);
+	else
+		return -ENOSYS;
+}
+
+static void snd_pcm_startat_audio_cancel(struct snd_pcm_substream *substream)
+{
+	if (substream->ops->start_at_abort)
+		substream->ops->start_at_abort(substream);
+}
+
+static int snd_pcm_start_at(struct snd_pcm_substream *substream,
+	struct snd_startat *start_at)
+{
+	int ret;
+
+	if (!timespec_valid(&start_at->start_time))
+		return -EINVAL;
+
+	snd_pcm_stream_lock(substream);
+
+	if(substream->start_at_pending) {
+		ret = -EBUSY;
+		goto end;
+	}
+
+	ret = snd_pcm_pre_start(substream, SNDRV_PCM_STATE_PREPARED);
+	if (ret < 0)
+		goto end;
+
+	switch (start_at->clock_class) {
+	case SNDRV_PCM_CLOCK_CLASS_SYSTEM:
+		ret = snd_pcm_startat_system(substream,
+			start_at->clock_type,
+			&start_at->start_time);
+		break;
+	case SNDRV_PCM_CLOCK_CLASS_AUDIO:
+		ret = snd_pcm_startat_audio(substream,
+			start_at->clock_type,
+			&start_at->start_time);
+		if(ret)
+			snd_pcm_startat_audio_cancel(substream);
+		break;
+	default:
+		ret = -EINVAL;
+	}
+
+	if (!ret) {
+		substream->runtime->status->state = SNDRV_PCM_STATE_STARTING;
+		substream->start_at_pending = true;
+		substream->start_at_clock_class = start_at->clock_class;
+	}
+
+end:
+	snd_pcm_stream_unlock(substream);
+	return ret;
+}
+
+static void snd_pcm_startat_cancel(struct snd_pcm_substream *substream)
+{
+	struct snd_pcm_runtime *runtime = substream->runtime;
+
+	if (runtime->status->state != SNDRV_PCM_STATE_STARTING)
+		return;
+
+	switch (substream->start_at_clock_class) {
+	case SNDRV_PCM_CLOCK_CLASS_SYSTEM:
+		snd_pcm_startat_system_cancel(substream);
+		break;
+	case SNDRV_PCM_CLOCK_CLASS_AUDIO:
+		snd_pcm_startat_audio_cancel(substream);
+		break;
+	default:
+		return;
+	}
+
+	runtime->status->state = SNDRV_PCM_STATE_SETUP;
+
+	wait_event_cmd(substream->start_at_wait,
+			!substream->start_at_pending,
+			snd_pcm_stream_unlock(substream),
+			snd_pcm_stream_lock(substream));
+}
+
+int snd_pcm_start_at_user(struct snd_pcm_substream *substream,
+	struct snd_startat __user *_start_at_user)
+{
+	struct snd_startat start_at;
+
+	if (copy_from_user(&start_at, _start_at_user, sizeof(start_at)))
+		return -EFAULT;
+
+	return snd_pcm_start_at(substream, &start_at);
+}
 
 /**
  * snd_pcm_start - start all linked streams
@@ -1101,9 +1292,21 @@ static int snd_pcm_pre_stop(struct snd_pcm_substream *substream, int state)
 
 static int snd_pcm_do_stop(struct snd_pcm_substream *substream, int state)
 {
-	if (substream->runtime->trigger_master == substream &&
-	    snd_pcm_running(substream))
-		substream->ops->trigger(substream, SNDRV_PCM_TRIGGER_STOP);
+	if (substream->runtime->trigger_master == substream) {
+		switch(substream->runtime->status->state) {
+		case SNDRV_PCM_STATE_STARTING:
+			snd_pcm_startat_cancel(substream);
+			break;
+		case SNDRV_PCM_STATE_RUNNING:
+		case SNDRV_PCM_STATE_DRAINING:
+			substream->ops->trigger(substream,
+				SNDRV_PCM_TRIGGER_STOP);
+			break;
+		default:
+			break;
+		}
+	}
+
 	return 0; /* unconditonally stop all substreams */
 }
 
@@ -1167,11 +1370,13 @@ int snd_pcm_drain_done(struct snd_pcm_substream *substream)
  */
 int snd_pcm_stop_xrun(struct snd_pcm_substream *substream)
 {
+	struct snd_pcm_runtime *runtime = substream->runtime;
 	unsigned long flags;
 	int ret = 0;
 
 	snd_pcm_stream_lock_irqsave(substream, flags);
-	if (snd_pcm_running(substream))
+	if (snd_pcm_running(substream) ||
+			runtime->status->state == SNDRV_PCM_STATE_STARTING)
 		ret = snd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);
 	snd_pcm_stream_unlock_irqrestore(substream, flags);
 	return ret;
@@ -1257,7 +1462,8 @@ static int snd_pcm_pause(struct snd_pcm_substream *substream, int push)
 static int snd_pcm_pre_suspend(struct snd_pcm_substream *substream, int state)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
-	if (runtime->status->state == SNDRV_PCM_STATE_SUSPENDED)
+	if ((runtime->status->state == SNDRV_PCM_STATE_SUSPENDED) ||
+			(runtime->status->state == SNDRV_PCM_STATE_STARTING))
 		return -EBUSY;
 	runtime->trigger_master = substream;
 	return 0;
@@ -1355,6 +1561,8 @@ static int snd_pcm_pre_resume(struct snd_pcm_substream *substream, int state)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	if (!(runtime->info & SNDRV_PCM_INFO_RESUME))
 		return -ENOSYS;
+	if (runtime->status->state == SNDRV_PCM_STATE_STARTING)
+		return -EBUSY;
 	runtime->trigger_master = substream;
 	return 0;
 }
@@ -1439,6 +1647,7 @@ static int snd_pcm_xrun(struct snd_pcm_substream *substream)
 		result = 0;	/* already there */
 		break;
 	case SNDRV_PCM_STATE_RUNNING:
+	case SNDRV_PCM_STATE_STARTING:
 		result = snd_pcm_stop(substream, SNDRV_PCM_STATE_XRUN);
 		break;
 	default:
@@ -1458,6 +1667,7 @@ static int snd_pcm_pre_reset(struct snd_pcm_substream *substream, int state)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	switch (runtime->status->state) {
 	case SNDRV_PCM_STATE_RUNNING:
+	case SNDRV_PCM_STATE_STARTING:
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_PAUSED:
 	case SNDRV_PCM_STATE_SUSPENDED:
@@ -1512,7 +1722,8 @@ static int snd_pcm_pre_prepare(struct snd_pcm_substream *substream,
 	if (runtime->status->state == SNDRV_PCM_STATE_OPEN ||
 	    runtime->status->state == SNDRV_PCM_STATE_DISCONNECTED)
 		return -EBADFD;
-	if (snd_pcm_running(substream))
+	if (snd_pcm_running(substream) ||
+	    runtime->status->state == SNDRV_PCM_STATE_STARTING)
 		return -EBUSY;
 	substream->f_flags = f_flags;
 	return 0;
@@ -1578,6 +1789,7 @@ static int snd_pcm_pre_drain_init(struct snd_pcm_substream *substream, int state
 	case SNDRV_PCM_STATE_OPEN:
 	case SNDRV_PCM_STATE_DISCONNECTED:
 	case SNDRV_PCM_STATE_SUSPENDED:
+	case SNDRV_PCM_STATE_STARTING:
 		return -EBADFD;
 	}
 	runtime->trigger_master = substream;
@@ -1782,6 +1994,7 @@ static int snd_pcm_drop(struct snd_pcm_substream *substream)
 		snd_pcm_pause(substream, 0);
 
 	snd_pcm_stop(substream, SNDRV_PCM_STATE_SETUP);
+
 	/* runtime->control->appl_ptr = runtime->status->hw_ptr; */
 	snd_pcm_stream_unlock_irq(substream);
 
@@ -2234,6 +2447,7 @@ void snd_pcm_release_substream(struct snd_pcm_substream *substream)
 		return;
 
 	snd_pcm_drop(substream);
+
 	if (substream->hw_opened) {
 		if (substream->ops->hw_free &&
 		    substream->runtime->status->state != SNDRV_PCM_STATE_OPEN)
@@ -2441,6 +2655,7 @@ static snd_pcm_sframes_t snd_pcm_playback_rewind(struct snd_pcm_substream *subst
 	snd_pcm_stream_lock_irq(substream);
 	switch (runtime->status->state) {
 	case SNDRV_PCM_STATE_PREPARED:
+	case SNDRV_PCM_STATE_STARTING:
 		break;
 	case SNDRV_PCM_STATE_DRAINING:
 	case SNDRV_PCM_STATE_RUNNING:
@@ -2490,6 +2705,7 @@ static snd_pcm_sframes_t snd_pcm_capture_rewind(struct snd_pcm_substream *substr
 	switch (runtime->status->state) {
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_DRAINING:
+	case SNDRV_PCM_STATE_STARTING:
 		break;
 	case SNDRV_PCM_STATE_RUNNING:
 		if (snd_pcm_update_hw_ptr(substream) >= 0)
@@ -2538,6 +2754,7 @@ static snd_pcm_sframes_t snd_pcm_playback_forward(struct snd_pcm_substream *subs
 	switch (runtime->status->state) {
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_PAUSED:
+	case SNDRV_PCM_STATE_STARTING:
 		break;
 	case SNDRV_PCM_STATE_DRAINING:
 	case SNDRV_PCM_STATE_RUNNING:
@@ -2588,6 +2805,7 @@ static snd_pcm_sframes_t snd_pcm_capture_forward(struct snd_pcm_substream *subst
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_DRAINING:
 	case SNDRV_PCM_STATE_PAUSED:
+	case SNDRV_PCM_STATE_STARTING:
 		break;
 	case SNDRV_PCM_STATE_RUNNING:
 		if (snd_pcm_update_hw_ptr(substream) >= 0)
@@ -2638,6 +2856,7 @@ static int snd_pcm_hwsync(struct snd_pcm_substream *substream)
 		/* Fall through */
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_SUSPENDED:
+	case SNDRV_PCM_STATE_STARTING:
 		err = 0;
 		break;
 	case SNDRV_PCM_STATE_XRUN:
@@ -2671,6 +2890,7 @@ static int snd_pcm_delay(struct snd_pcm_substream *substream,
 		/* Fall through */
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_SUSPENDED:
+	case SNDRV_PCM_STATE_STARTING:
 		err = 0;
 		if (substream->stream == SNDRV_PCM_STREAM_PLAYBACK)
 			n = snd_pcm_playback_hw_avail(runtime);
@@ -2781,6 +3001,8 @@ static int snd_pcm_common_ioctl1(struct file *file,
 		return snd_pcm_action_lock_irq(&snd_pcm_action_start, substream, SNDRV_PCM_STATE_RUNNING);
 	case SNDRV_PCM_IOCTL_LINK:
 		return snd_pcm_link(substream, (int)(unsigned long) arg);
+	case SNDRV_PCM_IOCTL_START_AT:
+		return snd_pcm_start_at(substream, arg);
 	case SNDRV_PCM_IOCTL_UNLINK:
 		return snd_pcm_unlink(substream);
 	case SNDRV_PCM_IOCTL_RESUME:
@@ -3172,6 +3394,7 @@ static unsigned int snd_pcm_playback_poll(struct file *file, poll_table * wait)
 	case SNDRV_PCM_STATE_RUNNING:
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_PAUSED:
+	case SNDRV_PCM_STATE_STARTING:
 		if (avail >= runtime->control->avail_min) {
 			mask = POLLOUT | POLLWRNORM;
 			break;
@@ -3209,6 +3432,7 @@ static unsigned int snd_pcm_capture_poll(struct file *file, poll_table * wait)
 	avail = snd_pcm_capture_avail(runtime);
 	switch (runtime->status->state) {
 	case SNDRV_PCM_STATE_RUNNING:
+	case SNDRV_PCM_STATE_STARTING:
 	case SNDRV_PCM_STATE_PREPARED:
 	case SNDRV_PCM_STATE_PAUSED:
 		if (avail >= runtime->control->avail_min) {
@@ -3333,6 +3557,20 @@ static inline struct page *
 snd_pcm_default_page_ops(struct snd_pcm_substream *substream, unsigned long ofs)
 {
 	void *vaddr = substream->runtime->dma_area + ofs;
+#if defined(CONFIG_MIPS) && defined(CONFIG_DMA_NONCOHERENT)
+	if (substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV)
+		return virt_to_page(CAC_ADDR(vaddr));
+#endif
+#if defined(CONFIG_PPC32) && defined(CONFIG_NOT_COHERENT_CACHE)
+	if (substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV) {
+		dma_addr_t addr = substream->runtime->dma_addr + ofs;
+		addr -= get_dma_offset(substream->dma_buffer.dev.dev);
+		/* assume dma_handle set via pfn_to_phys() in
+		 * mm/dma-noncoherent.c
+		 */
+		return pfn_to_page(addr >> PAGE_SHIFT);
+	}
+#endif
 	return virt_to_page(vaddr);
 }
 
@@ -3377,6 +3615,13 @@ static const struct vm_operations_struct snd_pcm_vm_ops_data_fault = {
 	.fault =	snd_pcm_mmap_data_fault,
 };
 
+#ifndef ARCH_HAS_DMA_MMAP_COHERENT
+/* This should be defined / handled globally! */
+#if defined(CONFIG_ARM) || defined(CONFIG_ARM64)
+#define ARCH_HAS_DMA_MMAP_COHERENT
+#endif
+#endif
+
 /*
  * mmap the DMA buffer on RAM
  */
@@ -3401,7 +3646,8 @@ int snd_pcm_lib_default_mmap(struct snd_pcm_substream *substream,
 				area->vm_end - area->vm_start, area->vm_page_prot);
 	}
 #endif /* CONFIG_GENERIC_ALLOCATOR */
-#ifndef CONFIG_X86 /* for avoiding warnings arch/x86/mm/pat.c */
+
+#ifdef ARCH_HAS_DMA_MMAP_COHERENT
 	if (!substream->ops->page &&
 	    substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV)
 		return dma_mmap_coherent(substream->dma_buffer.dev.dev,
@@ -3409,7 +3655,11 @@ int snd_pcm_lib_default_mmap(struct snd_pcm_substream *substream,
 					 substream->runtime->dma_area,
 					 substream->runtime->dma_addr,
 					 area->vm_end - area->vm_start);
-#endif /* CONFIG_X86 */
+#elif defined(CONFIG_MIPS) && defined(CONFIG_DMA_NONCOHERENT)
+	if (substream->dma_buffer.dev.type == SNDRV_DMA_TYPE_DEV &&
+	    !plat_device_is_coherent(substream->dma_buffer.dev.dev))
+		area->vm_page_prot = pgprot_noncached(area->vm_page_prot);
+#endif /* ARCH_HAS_DMA_MMAP_COHERENT */
 	/* mmap with fault handler */
 	area->vm_ops = &snd_pcm_vm_ops_data_fault;
 	return 0;

@@ -27,12 +27,12 @@
 
 /* Top level reg */
 #define CR_TIMER_CTRL_CFG		0x00
-#define TIMER_ME_GLOBAL			BIT(0)
+#define  TIMER_ME_GLOBAL		BIT(0)
 #define CR_TIMER_REV			0x10
 
 /* Timer specific registers */
 #define TIMER_CFG			0x20
-#define TIMER_ME_LOCAL			BIT(0)
+#define  TIMER_ME_LOCAL			BIT(0)
 #define TIMER_RELOAD_VALUE		0x24
 #define TIMER_CURRENT_VALUE		0x28
 #define TIMER_CURRENT_OVERFLOW_VALUE	0x2C
@@ -143,8 +143,7 @@ static struct pistachio_clocksource pcs_gpt = {
 		.disable	= pistachio_clocksource_disable,
 		.read		= pistachio_clocksource_read_cycles,
 		.mask		= CLOCKSOURCE_MASK(32),
-		.flags		= CLOCK_SOURCE_IS_CONTINUOUS |
-				  CLOCK_SOURCE_SUSPEND_NONSTOP,
+		.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 		},
 };
 
@@ -170,7 +169,7 @@ static void __init pistachio_clksrc_of_init(struct device_node *node)
 
 	/* Switch to using the fast counter clock */
 	ret = regmap_update_bits(periph_regs, PERIP_TIMER_CONTROL,
-				 0xf, 0x0);
+				 0x1, 0x0);
 	if (ret)
 		return;
 

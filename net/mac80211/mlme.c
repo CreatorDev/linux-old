@@ -1449,7 +1449,7 @@ static void ieee80211_change_ps(struct ieee80211_local *local)
 	}
 }
 
-static bool ieee80211_powersave_allowed(struct ieee80211_sub_if_data *sdata)
+bool ieee80211_powersave_allowed(struct ieee80211_sub_if_data *sdata)
 {
 	struct ieee80211_if_managed *mgd = &sdata->u.mgd;
 	struct sta_info *sta = NULL;
@@ -1483,6 +1483,7 @@ static bool ieee80211_powersave_allowed(struct ieee80211_sub_if_data *sdata)
 void ieee80211_recalc_ps(struct ieee80211_local *local)
 {
 	struct ieee80211_sub_if_data *sdata, *found = NULL;
+	struct ieee80211_conf *conf = &local->hw.conf;
 	int count = 0;
 	int timeout;
 
@@ -1528,6 +1529,19 @@ void ieee80211_recalc_ps(struct ieee80211_local *local)
 		local->ps_sdata = found;
 	} else {
 		local->ps_sdata = NULL;
+	}
+
+	if (count == 1 && conf->dynamic_ps_rx_timeout > 0 &&
+	    (found->more_data_cnt > found->max_more_data_cnt)) {
+		found->more_data_cnt = 0;
+		local->ps_sdata = NULL;
+		ieee80211_change_ps(local);
+		local->ps_sdata = found;
+		sdata->rx_packet_count = 0;
+		/*Check for inactivity to go back to PS*/
+		mod_timer(&local->dynamic_ps_rx_timer, jiffies +
+			  msecs_to_jiffies(conf->dynamic_ps_rx_timeout));
+		return;
 	}
 
 	ieee80211_change_ps(local);
@@ -1629,11 +1643,98 @@ void ieee80211_dynamic_ps_enable_work(struct work_struct *work)
 	}
 }
 
+void ieee80211_dynamic_ps_rx_recalc_ps_work(struct work_struct *work)
+{
+	struct ieee80211_local *local =
+		container_of(work, struct ieee80211_local,
+			     dynamic_ps_rx_recalc_ps_work);
+
+	mutex_lock(&local->iflist_mtx);
+	ieee80211_recalc_ps(local);
+	mutex_unlock(&local->iflist_mtx);
+}
+
+
 void ieee80211_dynamic_ps_timer(unsigned long data)
 {
 	struct ieee80211_local *local = (void *) data;
 
 	ieee80211_queue_work(&local->hw, &local->dynamic_ps_enable_work);
+}
+
+void ieee80211_dynamic_ps_rx_timer(unsigned long data)
+{
+	struct ieee80211_local *local = (void *) data;
+	struct ieee80211_sub_if_data *sdata = NULL;
+	struct ieee80211_conf *conf = &local->hw.conf;
+	unsigned char count = 0;
+
+	if (local->quiescing || local->suspended)
+		return;
+
+	list_for_each_entry(sdata, &local->interfaces, list) {
+		if (!ieee80211_sdata_running(sdata))
+			continue;
+
+		if (sdata->vif.type == NL80211_IFTYPE_AP) {
+			/* If an AP vif is found, then disable PS
+			 * by setting the count to zero thereby setting
+			 * ps_sdata to NULL.
+			 */
+			count = 0;
+			break;
+		}
+		if (sdata->vif.type != NL80211_IFTYPE_STATION)
+			continue;
+
+		count++;
+	}
+
+	if (count == 1) {
+		if (sdata->rx_packet_count) {
+			/*No change, data is still flowing*/
+			mod_timer(&local->dynamic_ps_rx_timer, jiffies +
+				  msecs_to_jiffies(conf->dynamic_ps_rx_timeout));
+		} else {
+			/*Go To powersave only if tx is also empty*/
+			mod_timer(&local->dynamic_ps_timer, jiffies +
+				  msecs_to_jiffies(conf->dynamic_ps_timeout));
+		}
+		sdata->rx_packet_count = 0;
+	}
+}
+
+void ieee80211_dynamic_ps_rx_traffic_timer(unsigned long data)
+{
+	struct ieee80211_local *local = (void *) data;
+	struct ieee80211_sub_if_data *sdata , *found = NULL;
+	unsigned char count = 0;
+
+	if (local->quiescing || local->suspended)
+		return;
+
+	list_for_each_entry(sdata, &local->interfaces, list) {
+		if (!ieee80211_sdata_running(sdata))
+			continue;
+		if (sdata->vif.type == NL80211_IFTYPE_AP) {
+			/* If an AP vif is found, then disable PS
+			 * by setting the count to zero thereby setting
+			 * ps_sdata to NULL.
+			 */
+			count = 0;
+			break;
+		}
+		if (sdata->vif.type != NL80211_IFTYPE_STATION)
+			continue;
+		found = sdata;
+		count++;
+	}
+	if (count == 1) {
+		if (found->more_data_cnt < found->max_more_data_cnt) {
+			/*Traffic is slow, stay in ps*/
+			found->more_data_cnt = 0;
+		}
+	}
 }
 
 void ieee80211_dfs_cac_timer_work(struct work_struct *work)
