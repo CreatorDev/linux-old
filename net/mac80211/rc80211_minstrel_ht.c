@@ -1102,13 +1102,14 @@ minstrel_ht_update_caps(void *priv, struct ieee80211_supported_band *sband,
 	struct minstrel_ht_sta_priv *msp = priv_sta;
 	struct minstrel_ht_sta *mi = &msp->ht;
 	struct ieee80211_mcs_info *mcs = &sta->ht_cap.mcs;
-	u16 sta_cap = sta->ht_cap.cap;
+	u16 ht_cap = sta->ht_cap.cap;
 	struct ieee80211_sta_vht_cap *vht_cap = &sta->vht_cap;
 	int use_vht;
 	int n_supported = 0;
 	int ack_dur;
 	int stbc;
 	int i;
+	bool ldpc;
 
 	/* fall back to the old minstrel for legacy stations */
 	if (!sta->ht_cap.ht_supported)
@@ -1146,15 +1147,23 @@ minstrel_ht_update_caps(void *priv, struct ieee80211_supported_band *sband,
 	}
 	mi->sample_tries = 4;
 
-	/* TODO tx_flags for vht - ATM the RC API is not fine-grained enough */
 	if (!use_vht) {
-		stbc = (sta_cap & IEEE80211_HT_CAP_RX_STBC) >>
+		stbc = (ht_cap & IEEE80211_HT_CAP_RX_STBC) >>
 			IEEE80211_HT_CAP_RX_STBC_SHIFT;
-		mi->tx_flags |= stbc << IEEE80211_TX_CTL_STBC_SHIFT;
 
-		if (sta_cap & IEEE80211_HT_CAP_LDPC_CODING)
-			mi->tx_flags |= IEEE80211_TX_CTL_LDPC;
+		if (ht_cap & IEEE80211_HT_CAP_LDPC_CODING)
+			ldpc = true;
+	} else {
+		stbc = (vht_cap->cap & IEEE80211_VHT_CAP_RXSTBC_MASK) >>
+			IEEE80211_VHT_CAP_RXSTBC_SHIFT;
+
+		if (vht_cap->cap & IEEE80211_VHT_CAP_RXLDPC)
+			ldpc = true;
 	}
+
+	mi->tx_flags |= stbc << IEEE80211_TX_CTL_STBC_SHIFT;
+	if (ldpc)
+		mi->tx_flags |= IEEE80211_TX_CTL_LDPC;
 
 	for (i = 0; i < ARRAY_SIZE(mi->groups); i++) {
 		u32 gflags = minstrel_mcs_groups[i].flags;
@@ -1168,10 +1177,10 @@ minstrel_ht_update_caps(void *priv, struct ieee80211_supported_band *sband,
 
 		if (gflags & IEEE80211_TX_RC_SHORT_GI) {
 			if (gflags & IEEE80211_TX_RC_40_MHZ_WIDTH) {
-				if (!(sta_cap & IEEE80211_HT_CAP_SGI_40))
+				if (!(ht_cap & IEEE80211_HT_CAP_SGI_40))
 					continue;
 			} else {
-				if (!(sta_cap & IEEE80211_HT_CAP_SGI_20))
+				if (!(ht_cap & IEEE80211_HT_CAP_SGI_20))
 					continue;
 			}
 		}
