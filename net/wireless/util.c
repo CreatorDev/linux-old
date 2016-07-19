@@ -1335,6 +1335,9 @@ EXPORT_SYMBOL(ieee80211_ie_split);
 bool ieee80211_operating_class_to_band(u8 operating_class,
 				       enum ieee80211_band *band)
 {
+	/* ToDo: Add support for handling non-global operating
+	 * classes based on country IE
+	 */
 	switch (operating_class) {
 	case 112:
 	case 115 ... 127:
@@ -1349,6 +1352,14 @@ bool ieee80211_operating_class_to_band(u8 operating_class,
 		return true;
 	case 180:
 		*band = IEEE80211_BAND_60GHZ;
+		return true;
+	}
+
+	/* WAR to avoid disconnection, if AP uses
+	 * non-global operating class.
+	 */
+	if (operating_class <= 80) {
+		*band = IEEE80211_BAND_5GHZ;
 		return true;
 	}
 
