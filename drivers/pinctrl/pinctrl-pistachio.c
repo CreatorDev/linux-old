@@ -1437,7 +1437,6 @@ static int pistachio_pinctrl_probe(struct platform_device *pdev)
 {
 	struct pistachio_pinctrl *pctl;
 	struct resource *res;
-	int ret;
 
 	pctl = devm_kzalloc(&pdev->dev, sizeof(*pctl), GFP_KERNEL);
 	if (!pctl)
@@ -1469,13 +1468,7 @@ static int pistachio_pinctrl_probe(struct platform_device *pdev)
 		return PTR_ERR(pctl->pctldev);
 	}
 
-	ret = pistachio_gpio_register(pctl);
-	if (ret < 0) {
-		pinctrl_unregister(pctl->pctldev);
-		return ret;
-	}
-
-	return 0;
+	return pistachio_gpio_register(pctl);
 }
 
 static struct platform_driver pistachio_pinctrl_driver = {
