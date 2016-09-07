@@ -15,7 +15,12 @@ Required properties:
 	- reset-gpio:		GPIO spec for the RESET pin
 Optional properties:
 	- amplified:		include if the CC2520 is connected to a CC2591 amplifier
-
+	- #clock-cells		from common clock binding; shall be set to 0
+				required if extclock-freq is specified
+	- extclock-freq:	frequency setting of external clock generator, should be
+				between 1000000-16000000 (check datasheet for supported values)
+				extclock is disabled if extclock-freq = <0>, if not specified
+				defaults to 1MHz (reset value)
 Example:
 	cc2520@0 {
 		compatible = "ti,cc2520";
@@ -30,4 +35,6 @@ Example:
 		cca-gpio = <&gpio1 16 0>;
 		vreg-gpio = <&gpio0 31 0>;
 		reset-gpio = <&gpio1 12 0>;
+		#clock-cells = <0>;
+		extclock-freq = <16000000>;
 	};

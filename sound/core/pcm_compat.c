@@ -316,6 +316,25 @@ static int snd_pcm_status_user_x32(struct snd_pcm_substream *substream,
 }
 #endif /* CONFIG_X86_X32 */
 
+struct snd_startat32 {
+	u32 clock_class;
+	u32 clock_type;
+	struct compat_timespec start_time;
+} __packed;
+
+static int snd_pcm_start_at_compat(struct snd_pcm_substream *substream,
+					struct snd_startat32 __user *_start_at)
+{
+	struct snd_startat start_at;
+
+	if (get_user(start_at.clock_class, &_start_at.clock_class) ||
+	    get_user(start_at.clock_type, &_start_at.clock_type) ||
+	    compat_get_timespec(&start_at.start_time, &_start_at.start_time))
+		return -EFAULT;
+
+	return snd_pcm_start_at(substream, &start_at);
+}
+
 /* both for HW_PARAMS and HW_REFINE */
 static int snd_pcm_ioctl_hw_params_compat(struct snd_pcm_substream *substream,
 					  int refine, 
@@ -653,6 +672,7 @@ enum {
 	SNDRV_PCM_IOCTL_STATUS_EXT_X32 = _IOWR('A', 0x24, struct snd_pcm_status_x32),
 	SNDRV_PCM_IOCTL_SYNC_PTR_X32 = _IOWR('A', 0x23, struct snd_pcm_sync_ptr_x32),
 #endif /* CONFIG_X86_X32 */
+	SNDRV_PCM_IOCTL_START_AT32 = _IOWR('A', 0x62, struct snd_startat32)
 };
 
 static long snd_pcm_ioctl_compat(struct file *file, unsigned int cmd, unsigned long arg)
@@ -734,6 +754,8 @@ static long snd_pcm_ioctl_compat(struct file *file, unsigned int cmd, unsigned l
 	case SNDRV_PCM_IOCTL_CHANNEL_INFO_X32:
 		return snd_pcm_ioctl_channel_info_x32(substream, argp);
 #endif /* CONFIG_X86_X32 */
+	case SNDRV_PCM_IOCTL_START_AT32:
+		return snd_pcm_start_at_compat(substream, argp);
 	}
 
 	return -ENOIOCTLCMD;

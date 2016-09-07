@@ -1815,6 +1815,10 @@ int ieee80211_if_add(struct ieee80211_local *local, const char *name,
 	sdata->ap_power_level = IEEE80211_UNSET_POWER_LEVEL;
 	sdata->user_power_level = local->user_power_level;
 
+	sdata->more_data_cnt   = 0;
+	sdata->max_more_data_cnt = 3;
+	sdata->rx_packet_count = 0;
+
 	sdata->encrypt_headroom = IEEE80211_ENCRYPT_HEADROOM;
 
 	/* setup type-dependent data */

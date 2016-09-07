@@ -736,6 +736,7 @@ struct nand_chip {
 #define NAND_MFR_SANDISK	0x45
 #define NAND_MFR_INTEL		0x89
 #define NAND_MFR_ATO		0x9b
+#define NAND_MFR_GIGADEVICE	0xc8
 
 /* The maximum expected count of bytes in the NAND ID sequence */
 #define NAND_MAX_ID_LEN 8
@@ -792,6 +793,7 @@ struct nand_chip {
  *               @ecc_step_ds in nand_chip{}, also from the datasheet.
  *               For example, the "4bit ECC for each 512Byte" can be set with
  *               NAND_ECC_INFO(4, 512).
+ * @ecc.layout: If the device has on-die ECC, it can provide its own ECC layout.
  * @onfi_timing_mode_default: the default ONFI timing mode entered after a NAND
  *			      reset. Should be deduced from timings described
  *			      in the datasheet.
@@ -815,6 +817,7 @@ struct nand_flash_dev {
 	struct {
 		uint16_t strength_ds;
 		uint16_t step_ds;
+		struct nand_ecclayout *layout;
 	} ecc;
 	int onfi_timing_mode_default;
 };

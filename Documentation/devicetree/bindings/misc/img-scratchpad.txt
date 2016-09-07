@@ -1,0 +1,21 @@
+Imagination Technologies scratchpad driver
+
+Provide syfs read/write access to the scratchpad registers.
+These registers are soft reset protected registers.
+
+Required properties:
+- compatible: Should be "img,pistachio-scratchpad", "syscon"
+- reg: Should contain scratchpad registers location and length
+- clocks: Must contain an entry for each entry in clock-names.
+- clock-names: Should contain "wdt" and "sys";
+- sysfs-mask: 8 bit value should specify the registers to be exposed via sysfs
+
+Examples:
+
+scratchpad@18102120 {
+	compatible = "img,pistachio-scratchpad", "syscon";
+	reg = <0x18102120 0x20>;
+	clocks = <&clk_periph PERIPH_CLK_WD>, <&cr_periph SYS_CLK_WD>;
+	clock-names = "wdt", "sys";
+	sysfs-mask = /bits/ 8 <0xFE>; /*expose all except the first reg */
+};

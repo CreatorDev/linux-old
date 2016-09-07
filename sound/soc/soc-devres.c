@@ -159,4 +159,27 @@ int devm_snd_dmaengine_pcm_register(struct device *dev,
 }
 EXPORT_SYMBOL_GPL(devm_snd_dmaengine_pcm_register);
 
+int devm_snd_dmaengine_pcm_register_id_name(struct device *dev,
+	const struct snd_dmaengine_pcm_config *config, unsigned int flags,
+	unsigned int id, char *platform_name)
+{
+	struct device **ptr;
+	int ret;
+
+	ptr = devres_alloc(devm_dmaengine_pcm_release, sizeof(*ptr), GFP_KERNEL);
+	if (!ptr)
+		return -ENOMEM;
+
+	ret = snd_dmaengine_pcm_register_id_name(dev, config, flags, id, platform_name);
+	if (ret == 0) {
+		*ptr = dev;
+		devres_add(dev, ptr);
+	} else {
+		devres_free(ptr);
+	}
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(devm_snd_dmaengine_pcm_register_id_name);
+
 #endif

@@ -1190,10 +1190,27 @@ ieee80211_rx_h_check_more_data(struct ieee80211_rx_data *rx)
 	struct ieee80211_local *local;
 	struct ieee80211_hdr *hdr;
 	struct sk_buff *skb;
+	struct ieee80211_sub_if_data *sdata = rx->sdata;
+	struct ieee80211_conf *conf;
 
 	local = rx->local;
+	conf = &local->hw.conf;
+
 	skb = rx->skb;
 	hdr = (struct ieee80211_hdr *) skb->data;
+
+	if (conf->dynamic_ps_rx_timeout > 0 &&
+	    ieee80211_powersave_allowed(sdata) &&
+	    (conf->flags & IEEE80211_CONF_PS) &&
+	     ieee80211_is_data(hdr->frame_control) &&
+	     ieee80211_has_moredata(hdr->frame_control)) {
+		sdata->more_data_cnt++;
+		/*For first packet start a traffic timer*/
+		if (sdata->more_data_cnt == 1)
+			mod_timer(&local->dynamic_ps_rx_traffic_timer, jiffies +
+				  msecs_to_jiffies(conf->dynamic_ps_rx_traffic_timeout));
+		ieee80211_queue_work(&local->hw, &local->dynamic_ps_rx_recalc_ps_work);
+	}
 
 	if (!local->pspolling)
 		return RX_CONTINUE;
@@ -1212,7 +1229,7 @@ ieee80211_rx_h_check_more_data(struct ieee80211_rx_data *rx)
 	}
 
 	/* more data bit is set, let's request a new frame from the AP */
-	ieee80211_send_pspoll(local, rx->sdata);
+	ieee80211_send_pspoll(local, sdata);
 
 	return RX_CONTINUE;
 }
@@ -3437,6 +3454,7 @@ static bool ieee80211_prepare_and_rx_handle(struct ieee80211_rx_data *rx,
 		rx->skb = skb;
 	}
 
+	sdata->rx_packet_count++;
 	ieee80211_invoke_rx_handlers(rx);
 	return true;
 }

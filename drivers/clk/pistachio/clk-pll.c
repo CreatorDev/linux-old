@@ -66,10 +66,8 @@
 #define MAX_OUTPUT_FRAC			1600000000UL
 
 /* Fractional PLL operating modes */
-enum pll_mode {
-	PLL_MODE_FRAC,
-	PLL_MODE_INT,
-};
+#define PLL_MODE_INT			1
+#define PLL_MODE_FRAC			0
 
 struct pistachio_clk_pll {
 	struct clk_hw hw;
@@ -105,7 +103,7 @@ static inline struct pistachio_clk_pll *to_pistachio_pll(struct clk_hw *hw)
 	return container_of(hw, struct pistachio_clk_pll, hw);
 }
 
-static inline enum pll_mode pll_frac_get_mode(struct clk_hw *hw)
+static inline u32 pll_frac_get_mode(struct clk_hw *hw)
 {
 	struct pistachio_clk_pll *pll = to_pistachio_pll(hw);
 	u32 val;
@@ -114,7 +112,7 @@ static inline enum pll_mode pll_frac_get_mode(struct clk_hw *hw)
 	return val ? PLL_MODE_INT : PLL_MODE_FRAC;
 }
 
-static inline void pll_frac_set_mode(struct clk_hw *hw, enum pll_mode mode)
+static inline void pll_frac_set_mode(struct clk_hw *hw, u32 mode)
 {
 	struct pistachio_clk_pll *pll = to_pistachio_pll(hw);
 	u32 val;
@@ -132,29 +130,44 @@ static struct pistachio_pll_rate_table *
 pll_get_params(struct pistachio_clk_pll *pll, unsigned long fref,
 	       unsigned long fout)
 {
-	unsigned int i;
+	unsigned int i, best;
+	unsigned long err, best_err = ~0;
 
 	for (i = 0; i < pll->nr_rates; i++) {
-		if (pll->rates[i].fref == fref && pll->rates[i].fout == fout)
-			return &pll->rates[i];
+		err = abs(pll->rates[i].fout - fout);
+		if (pll->rates[i].fref == fref && err < best_err) {
+			best = i;
+			best_err = err;
+		}
 	}
 
-	return NULL;
+	return &pll->rates[best];
 }
 
 static long pll_round_rate(struct clk_hw *hw, unsigned long rate,
 			   unsigned long *parent_rate)
 {
 	struct pistachio_clk_pll *pll = to_pistachio_pll(hw);
-	unsigned int i;
+	unsigned int i, best;
+	unsigned long err, best_err = ~0;
 
 	for (i = 0; i < pll->nr_rates; i++) {
-		if (i > 0 && pll->rates[i].fref == *parent_rate &&
-		    pll->rates[i].fout <= rate)
-			return pll->rates[i - 1].fout;
+		err = abs(pll->rates[i].fout - rate);
+		if (pll->rates[i].fref == *parent_rate && err < best_err) {
+			best = i;
+			best_err = err;
+		}
 	}
 
-	return pll->rates[0].fout;
+	/*
+	 * If the chosen rate is within the maximum allowed PLL adjustment
+	 * then we accept it.
+	 * Otherwise, just return the closest nominal table rate.
+	 */
+	if (rate <= pll->rates[best].fout_max &&
+	    rate >= pll->rates[best].fout_min)
+		return rate;
+	return pll->rates[best].fout;
 }
 
 static int pll_gf40lp_frac_enable(struct clk_hw *hw)
@@ -199,7 +212,7 @@ static int pll_gf40lp_frac_set_rate(struct clk_hw *hw, unsigned long rate,
 	struct pistachio_clk_pll *pll = to_pistachio_pll(hw);
 	struct pistachio_pll_rate_table *params;
 	int enabled = pll_gf40lp_frac_is_enabled(hw);
-	u64 val, vco, old_postdiv1, old_postdiv2;
+	u64 val, vco, old_postdiv1, old_postdiv2, frac;
 	const char *name = clk_hw_get_name(hw);
 
 	if (rate < MIN_OUTPUT_FRAC || rate > MAX_OUTPUT_FRAC)
@@ -225,6 +238,11 @@ static int pll_gf40lp_frac_set_rate(struct clk_hw *hw, unsigned long rate,
 	if (val > vco / 16)
 		pr_warn("%s: PFD %llu is too high (max %llu)\n",
 			name, val, vco / 16);
+
+	/* Calculate the frac parameter */
+	frac = rate * params->refdiv * params->postdiv1 * params->postdiv2;
+	frac -= (params->fbdiv * parent_rate);
+	frac = do_div_round_closest(frac << 24, parent_rate);
 
 	val = pll_readl(pll, PLL_CTRL1);
 	val &= ~((PLL_CTRL1_REFDIV_MASK << PLL_CTRL1_REFDIV_SHIFT) |
@@ -252,7 +270,7 @@ static int pll_gf40lp_frac_set_rate(struct clk_hw *hw, unsigned long rate,
 		  PLL_FRAC_CTRL2_POSTDIV1_SHIFT) |
 		 (PLL_FRAC_CTRL2_POSTDIV2_MASK <<
 		  PLL_FRAC_CTRL2_POSTDIV2_SHIFT));
-	val |= (params->frac << PLL_FRAC_CTRL2_FRAC_SHIFT) |
+	val |= (frac << PLL_FRAC_CTRL2_FRAC_SHIFT) |
 		(params->postdiv1 << PLL_FRAC_CTRL2_POSTDIV1_SHIFT) |
 		(params->postdiv2 << PLL_FRAC_CTRL2_POSTDIV2_SHIFT);
 	pll_writel(pll, val, PLL_CTRL2);

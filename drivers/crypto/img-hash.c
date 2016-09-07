@@ -71,6 +71,7 @@
 #define DRIVER_FLAGS_MD5		BIT(21)
 
 #define IMG_HASH_QUEUE_LENGTH		20
+#define IMG_HASH_DMA_BURST		4
 #define IMG_HASH_DMA_THRESHOLD		64
 
 #ifdef __LITTLE_ENDIAN
@@ -102,8 +103,10 @@ struct img_hash_request_ctx {
 	unsigned long		op;
 
 	size_t			bufcnt;
-	u8 buffer[0] __aligned(sizeof(u32));
 	struct ahash_request	fallback_req;
+
+	/* Zero length buffer must remain last member of struct */
+	u8 buffer[0] __aligned(sizeof(u32));
 };
 
 struct img_hash_ctx {
@@ -340,7 +343,7 @@ static int img_hash_dma_init(struct img_hash_dev *hdev)
 	dma_conf.direction = DMA_MEM_TO_DEV;
 	dma_conf.dst_addr = hdev->bus_addr;
 	dma_conf.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
-	dma_conf.dst_maxburst = 16;
+	dma_conf.dst_maxburst = IMG_HASH_DMA_BURST;
 	dma_conf.device_fc = false;
 
 	err = dmaengine_slave_config(hdev->dma_lch,  &dma_conf);
@@ -361,7 +364,7 @@ static void img_hash_dma_task(unsigned long d)
 	size_t nbytes, bleft, wsend, len, tbc;
 	struct scatterlist tsg;
 
-	if (!ctx->sg)
+	if (!ctx || !ctx->sg)
 		return;
 
 	addr = sg_virt(ctx->sg);
@@ -587,6 +590,32 @@ static int img_hash_finup(struct ahash_request *req)
 	return crypto_ahash_finup(&rctx->fallback_req);
 }
 
+static int img_hash_import(struct ahash_request *req, const void *in)
+{
+	struct img_hash_request_ctx *rctx = ahash_request_ctx(req);
+	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
+	struct img_hash_ctx *ctx = crypto_ahash_ctx(tfm);
+
+	ahash_request_set_tfm(&rctx->fallback_req, ctx->fallback);
+	rctx->fallback_req.base.flags = req->base.flags
+		& CRYPTO_TFM_REQ_MAY_SLEEP;
+
+	return crypto_ahash_import(&rctx->fallback_req, in);
+}
+
+static int img_hash_export(struct ahash_request *req, void *out)
+{
+	struct img_hash_request_ctx *rctx = ahash_request_ctx(req);
+	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
+	struct img_hash_ctx *ctx = crypto_ahash_ctx(tfm);
+
+	ahash_request_set_tfm(&rctx->fallback_req, ctx->fallback);
+	rctx->fallback_req.base.flags = req->base.flags
+		& CRYPTO_TFM_REQ_MAY_SLEEP;
+
+	return crypto_ahash_export(&rctx->fallback_req, out);
+}
+
 static int img_hash_digest(struct ahash_request *req)
 {
 	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
@@ -711,9 +740,12 @@ static struct ahash_alg img_algs[] = {
 		.update = img_hash_update,
 		.final = img_hash_final,
 		.finup = img_hash_finup,
+		.export = img_hash_export,
+		.import = img_hash_import,
 		.digest = img_hash_digest,
 		.halg = {
 			.digestsize = MD5_DIGEST_SIZE,
+			.statesize = sizeof(struct md5_state),
 			.base = {
 				.cra_name = "md5",
 				.cra_driver_name = "img-md5",
@@ -734,9 +766,12 @@ static struct ahash_alg img_algs[] = {
 		.update = img_hash_update,
 		.final = img_hash_final,
 		.finup = img_hash_finup,
+		.export = img_hash_export,
+		.import = img_hash_import,
 		.digest = img_hash_digest,
 		.halg = {
 			.digestsize = SHA1_DIGEST_SIZE,
+			.statesize = sizeof(struct sha1_state),
 			.base = {
 				.cra_name = "sha1",
 				.cra_driver_name = "img-sha1",
@@ -757,9 +792,12 @@ static struct ahash_alg img_algs[] = {
 		.update = img_hash_update,
 		.final = img_hash_final,
 		.finup = img_hash_finup,
+		.export = img_hash_export,
+		.import = img_hash_import,
 		.digest = img_hash_digest,
 		.halg = {
 			.digestsize = SHA224_DIGEST_SIZE,
+			.statesize = sizeof(struct sha256_state),
 			.base = {
 				.cra_name = "sha224",
 				.cra_driver_name = "img-sha224",
@@ -780,9 +818,12 @@ static struct ahash_alg img_algs[] = {
 		.update = img_hash_update,
 		.final = img_hash_final,
 		.finup = img_hash_finup,
+		.export = img_hash_export,
+		.import = img_hash_import,
 		.digest = img_hash_digest,
 		.halg = {
 			.digestsize = SHA256_DIGEST_SIZE,
+			.statesize = sizeof(struct sha256_state),
 			.base = {
 				.cra_name = "sha256",
 				.cra_driver_name = "img-sha256",
@@ -971,7 +1012,7 @@ static int img_hash_probe(struct platform_device *pdev)
 	err = img_register_algs(hdev);
 	if (err)
 		goto err_algs;
-	dev_dbg(dev, "Img MD5/SHA1/SHA224/SHA256 Hardware accelerator initialized\n");
+	dev_info(dev, "Img MD5/SHA1/SHA224/SHA256 Hardware accelerator initialized\n");
 
 	return 0;
 
@@ -1013,11 +1054,38 @@ static int img_hash_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int img_hash_suspend(struct device *dev)
+{
+	struct img_hash_dev *hdev = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(hdev->hash_clk);
+	clk_disable_unprepare(hdev->sys_clk);
+
+	return 0;
+}
+
+static int img_hash_resume(struct device *dev)
+{
+	struct img_hash_dev *hdev = dev_get_drvdata(dev);
+
+	clk_prepare_enable(hdev->hash_clk);
+	clk_prepare_enable(hdev->sys_clk);
+
+	return 0;
+}
+#endif /* CONFIG_PM_SLEEP */
+
+static const struct dev_pm_ops img_hash_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(img_hash_suspend, img_hash_resume)
+};
+
 static struct platform_driver img_hash_driver = {
 	.probe		= img_hash_probe,
 	.remove		= img_hash_remove,
 	.driver		= {
 		.name	= "img-hash-accelerator",
+		.pm	= &img_hash_pm_ops,
 		.of_match_table	= of_match_ptr(img_hash_match),
 	}
 };

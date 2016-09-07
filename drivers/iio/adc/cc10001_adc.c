@@ -426,6 +426,33 @@ static int cc10001_adc_remove(struct platform_device *pdev)
 	return 0;
 }
 
+
+#ifdef CONFIG_PM_SLEEP
+static int cc10001_adc_suspend(struct device *dev)
+{
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
+	struct cc10001_adc_device *adc_dev = iio_priv(indio_dev);
+
+	clk_disable(adc_dev->adc_clk);
+
+	return 0;
+}
+
+static int cc10001_adc_resume(struct device *dev)
+{
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
+	struct cc10001_adc_device *adc_dev = iio_priv(indio_dev);
+
+	clk_enable(adc_dev->adc_clk);
+
+	return 0;
+}
+#endif /* CONFIG_PM_SLEEP */
+
+static const struct dev_pm_ops cc10001_adc_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(cc10001_adc_suspend, cc10001_adc_resume)
+};
+
 static const struct of_device_id cc10001_adc_dt_ids[] = {
 	{ .compatible = "cosmic,10001-adc", },
 	{ }
@@ -435,6 +462,7 @@ MODULE_DEVICE_TABLE(of, cc10001_adc_dt_ids);
 static struct platform_driver cc10001_adc_driver = {
 	.driver = {
 		.name   = "cc10001-adc",
+		.pm	= &cc10001_adc_pm_ops,
 		.of_match_table = cc10001_adc_dt_ids,
 	},
 	.probe	= cc10001_adc_probe,

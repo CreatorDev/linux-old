@@ -35,6 +35,7 @@ struct dmaengine_pcm {
 	const struct snd_dmaengine_pcm_config *config;
 	struct snd_soc_platform platform;
 	unsigned int flags;
+	bool dma_pre_started;
 };
 
 static struct dmaengine_pcm *soc_platform_to_pcm(struct snd_soc_platform *p)
@@ -318,14 +319,90 @@ static snd_pcm_uframes_t dmaengine_pcm_pointer(
 		return snd_dmaengine_pcm_pointer(substream);
 }
 
+int dmaengine_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct dmaengine_pcm *pcm = soc_platform_to_pcm(rtd->platform);
+	struct dma_chan *dma_chan = snd_dmaengine_pcm_get_chan(substream);
+	int ret;
+
+	switch (cmd) {
+	case SNDRV_PCM_TRIGGER_START:
+		if(!pcm->dma_pre_started) {
+			ret = dmaengine_pcm_prepare_and_submit(substream);
+			if (ret)
+				return ret;
+			dma_async_issue_pending(dma_chan);
+		}
+		break;
+	case SNDRV_PCM_TRIGGER_RESUME:
+	case SNDRV_PCM_TRIGGER_PAUSE_RELEASE:
+		if (substream->runtime->hw.info & SNDRV_PCM_INFO_RESUME)
+			dmaengine_resume(dma_chan);
+		else
+			return -ENOSYS;
+		break;
+	case SNDRV_PCM_TRIGGER_SUSPEND:
+	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
+		if (substream->runtime->hw.info & SNDRV_PCM_INFO_PAUSE)
+			dmaengine_pause(dma_chan);
+		else
+			dmaengine_terminate_all(dma_chan);
+		break;
+	case SNDRV_PCM_TRIGGER_STOP:
+		dmaengine_terminate_all(dma_chan);
+		pcm->dma_pre_started = false;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int dmaengine_start_at(struct snd_pcm_substream *substream,
+	int audio_clock_type, const struct timespec *ts)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct dmaengine_pcm *pcm = soc_platform_to_pcm(rtd->platform);
+	struct dma_chan *dma_chan = snd_dmaengine_pcm_get_chan(substream);
+	int ret;
+
+	if(pcm->flags & SND_DMAENGINE_PCM_FLAG_EARLY_START) {
+		ret = dmaengine_pcm_prepare_and_submit(substream);
+		if (ret)
+			return ret;
+		dma_async_issue_pending(dma_chan);
+		pcm->dma_pre_started = true;
+	}
+
+	return 0;
+}
+
+static int dmaengine_start_at_abort(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct dmaengine_pcm *pcm = soc_platform_to_pcm(rtd->platform);
+	struct dma_chan *dma_chan = snd_dmaengine_pcm_get_chan(substream);
+
+	if(pcm->dma_pre_started) {
+		dmaengine_terminate_all(dma_chan);
+		pcm->dma_pre_started = false;
+	}
+
+	return 0;
+}
+
 static const struct snd_pcm_ops dmaengine_pcm_ops = {
 	.open		= dmaengine_pcm_open,
 	.close		= snd_dmaengine_pcm_close,
 	.ioctl		= snd_pcm_lib_ioctl,
 	.hw_params	= dmaengine_pcm_hw_params,
 	.hw_free	= snd_pcm_lib_free_pages,
-	.trigger	= snd_dmaengine_pcm_trigger,
+	.trigger	= dmaengine_pcm_trigger,
 	.pointer	= dmaengine_pcm_pointer,
+	.start_at	= dmaengine_start_at,
+	.start_at_abort = dmaengine_start_at_abort
 };
 
 static const struct snd_soc_platform_driver dmaengine_pcm_platform = {
@@ -441,6 +518,42 @@ err_free_dma:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_register);
+
+int snd_dmaengine_pcm_register_id_name(struct device *dev,
+	const struct snd_dmaengine_pcm_config *config, unsigned int flags,
+	unsigned int id, char *platform_name)
+{
+	struct dmaengine_pcm *pcm;
+	int ret;
+
+	pcm = kzalloc(sizeof(*pcm), GFP_KERNEL);
+	if (!pcm)
+		return -ENOMEM;
+
+	pcm->config = config;
+	pcm->flags = flags;
+
+	ret = dmaengine_pcm_request_chan_of(pcm, dev, config);
+	if (ret)
+		goto err_free_dma;
+
+	ret = snd_soc_add_platform(dev, &pcm->platform,
+		&dmaengine_pcm_platform);
+	if (ret)
+		goto err_free_dma;
+
+	pcm->platform.component.id = id;
+	kfree(pcm->platform.component.name);
+	pcm->platform.component.name = kstrdup(platform_name, GFP_KERNEL);
+
+	return 0;
+
+err_free_dma:
+	dmaengine_pcm_release_chan(pcm);
+	kfree(pcm);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(snd_dmaengine_pcm_register_id_name);
 
 /**
  * snd_dmaengine_pcm_unregister - Removes a dmaengine based PCM device

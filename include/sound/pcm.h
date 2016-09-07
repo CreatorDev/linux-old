@@ -30,6 +30,9 @@
 #include <linux/mm.h>
 #include <linux/bitops.h>
 #include <linux/pm_qos.h>
+#if defined(CONFIG_HIGH_RES_TIMERS)
+#include <linux/hrtimer.h>
+#endif
 
 #define snd_pcm_substream_chip(substream) ((substream)->private_data)
 #define snd_pcm_chip(pcm) ((pcm)->private_data)
@@ -73,6 +76,9 @@ struct snd_pcm_ops {
 	int (*hw_free)(struct snd_pcm_substream *substream);
 	int (*prepare)(struct snd_pcm_substream *substream);
 	int (*trigger)(struct snd_pcm_substream *substream, int cmd);
+	int (*start_at)(struct snd_pcm_substream *substream,
+		int audio_clock_type, const struct timespec *ts);
+	int (*start_at_abort)(struct snd_pcm_substream *substream);
 	snd_pcm_uframes_t (*pointer)(struct snd_pcm_substream *substream);
 	int (*get_time_info)(struct snd_pcm_substream *substream,
 			struct timespec *system_ts, struct timespec *audio_ts,
@@ -422,6 +428,7 @@ struct snd_pcm_runtime {
 	/* -- OSS things -- */
 	struct snd_pcm_oss_runtime oss;
 #endif
+
 };
 
 struct snd_pcm_group {		/* keep linked substreams */
@@ -482,6 +489,16 @@ struct snd_pcm_substream {
 #endif /* CONFIG_SND_VERBOSE_PROCFS */
 	/* misc flags */
 	unsigned int hw_opened: 1;
+	/* start at wait queue */
+	wait_queue_head_t start_at_wait;
+	/* start at status info */
+	bool start_at_pending;
+	/* Clock type for pending start at */
+	int start_at_clock_class;
+#ifdef CONFIG_HIGH_RES_TIMERS
+	/* start at timer for use with system startat */
+	struct hrtimer start_at_timer;
+#endif
 };
 
 #define SUBSTREAM_BUSY(substream) ((substream)->ref_count > 0)
@@ -564,6 +581,10 @@ int snd_pcm_info_user(struct snd_pcm_substream *substream,
 int snd_pcm_status(struct snd_pcm_substream *substream,
 		   struct snd_pcm_status *status);
 int snd_pcm_start(struct snd_pcm_substream *substream);
+int snd_pcm_pre_start(struct snd_pcm_substream *substream, int state);
+int snd_pcm_do_start(struct snd_pcm_substream *substream, int state);
+void snd_pcm_undo_start(struct snd_pcm_substream *substream, int state);
+void snd_pcm_post_start(struct snd_pcm_substream *substream, int state);
 int snd_pcm_stop(struct snd_pcm_substream *substream, snd_pcm_state_t status);
 int snd_pcm_drain_done(struct snd_pcm_substream *substream);
 int snd_pcm_stop_xrun(struct snd_pcm_substream *substream);
@@ -1085,6 +1106,9 @@ snd_pcm_sframes_t snd_pcm_lib_writev(struct snd_pcm_substream *substream,
 				     void __user **bufs, snd_pcm_uframes_t frames);
 snd_pcm_sframes_t snd_pcm_lib_readv(struct snd_pcm_substream *substream,
 				    void __user **bufs, snd_pcm_uframes_t frames);
+
+void snd_pcm_start_at_trigger(struct snd_pcm_substream *substream);
+void snd_pcm_start_at_cleanup(struct snd_pcm_substream *substream);
 
 extern const struct snd_pcm_hw_constraint_list snd_pcm_known_rates;
 

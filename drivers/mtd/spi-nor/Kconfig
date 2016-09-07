@@ -41,4 +41,12 @@ config SPI_NXP_SPIFI
 	  Flash. Enable this option if you have a device with a SPIFI
 	  controller and want to access the Flash as a mtd device.
 
+config MTD_SPI_NOR_WINBOND_OTP
+	bool "Support for winbond security register and unique ID"
+	depends on MTD_SPI_NOR
+	default n
+	help
+	  This enables support for read/write of winbond security registers
+	  as user OTP and also reading of NOR unique ID as factory OTP.
+
 endif # MTD_SPI_NOR

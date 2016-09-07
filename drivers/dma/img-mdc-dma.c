@@ -623,30 +623,74 @@ static enum dma_status mdc_tx_status(struct dma_chan *chan,
 			(MDC_CMDS_PROCESSED_CMDS_DONE_MASK + 1);
 
 		/*
-		 * If the command loaded event hasn't been processed yet, then
-		 * the difference above includes an extra command.
+		 * If the first node has not yet been read from memory,
+		 * the residue register value is undefined
 		 */
-		if (!mdesc->cmd_loaded)
-			cmds--;
-		else
-			cmds += mdesc->list_cmds_done;
-
-		bytes = mdesc->list_xfer_size;
-		ldesc = mdesc->list;
-		for (i = 0; i < cmds; i++) {
-			bytes -= ldesc->xfer_size + 1;
-			ldesc = ldesc->next_desc;
-		}
-		if (ldesc) {
-			if (residue != MDC_TRANSFER_SIZE_MASK)
-				bytes -= ldesc->xfer_size - residue;
+		if (!mdesc->cmd_loaded && !cmds) {
+			bytes = mdesc->list_xfer_size;
+		} else {
+			/*
+			 * If the command loaded event hasn't been processed yet, then
+			 * the difference above includes an extra command.
+			 */
+			if (!mdesc->cmd_loaded)
+				cmds--;
 			else
+				cmds += mdesc->list_cmds_done;
+
+			bytes = mdesc->list_xfer_size;
+			ldesc = mdesc->list;
+			for (i = 0; i < cmds; i++) {
 				bytes -= ldesc->xfer_size + 1;
+				ldesc = ldesc->next_desc;
+			}
+			if (ldesc) {
+				if (residue != MDC_TRANSFER_SIZE_MASK)
+					bytes -= ldesc->xfer_size - residue;
+				else
+					bytes -= ldesc->xfer_size + 1;
+			}
 		}
 	}
 	spin_unlock_irqrestore(&mchan->vc.lock, flags);
 
 	dma_set_residue(txstate, bytes);
+
+	return ret;
+}
+
+static unsigned int mdc_get_new_events(struct mdc_chan *mchan)
+{
+	u32 val, processed, done1, done2;
+	unsigned int ret;
+
+	val = mdc_chan_readl(mchan, MDC_CMDS_PROCESSED);
+	processed = (val >> MDC_CMDS_PROCESSED_CMDS_PROCESSED_SHIFT) &
+		MDC_CMDS_PROCESSED_CMDS_PROCESSED_MASK;
+	/*
+	 * CMDS_DONE may have incremented between reading CMDS_PROCESSED
+	 * and clearing INT_ACTIVE.  Re-read CMDS_PROCESSED to ensure we
+	 * didn't miss a command completion.
+	 */
+	do {
+		val = mdc_chan_readl(mchan, MDC_CMDS_PROCESSED);
+		done1 = (val >> MDC_CMDS_PROCESSED_CMDS_DONE_SHIFT) &
+			MDC_CMDS_PROCESSED_CMDS_DONE_MASK;
+		val &= ~((MDC_CMDS_PROCESSED_CMDS_PROCESSED_MASK <<
+			  MDC_CMDS_PROCESSED_CMDS_PROCESSED_SHIFT) |
+			 MDC_CMDS_PROCESSED_INT_ACTIVE);
+		val |= done1 << MDC_CMDS_PROCESSED_CMDS_PROCESSED_SHIFT;
+		mdc_chan_writel(mchan, val, MDC_CMDS_PROCESSED);
+		val = mdc_chan_readl(mchan, MDC_CMDS_PROCESSED);
+		done2 = (val >> MDC_CMDS_PROCESSED_CMDS_DONE_SHIFT) &
+			MDC_CMDS_PROCESSED_CMDS_DONE_MASK;
+	} while (done1 != done2);
+
+	if (done1 >= processed)
+		ret = done1 - processed;
+	else
+		ret = ((MDC_CMDS_PROCESSED_CMDS_PROCESSED_MASK + 1) -
+			processed) + done1;
 
 	return ret;
 }
@@ -666,6 +710,8 @@ static int mdc_terminate_all(struct dma_chan *chan)
 	mdesc = mchan->desc;
 	mchan->desc = NULL;
 	vchan_get_all_descriptors(&mchan->vc, &head);
+
+	mdc_get_new_events(mchan);
 
 	spin_unlock_irqrestore(&mchan->vc.lock, flags);
 
@@ -703,34 +749,16 @@ static irqreturn_t mdc_chan_irq(int irq, void *dev_id)
 {
 	struct mdc_chan *mchan = (struct mdc_chan *)dev_id;
 	struct mdc_tx_desc *mdesc;
-	u32 val, processed, done1, done2;
-	unsigned int i;
+	unsigned int i, new_events;
 
 	spin_lock(&mchan->vc.lock);
 
-	val = mdc_chan_readl(mchan, MDC_CMDS_PROCESSED);
-	processed = (val >> MDC_CMDS_PROCESSED_CMDS_PROCESSED_SHIFT) &
-		MDC_CMDS_PROCESSED_CMDS_PROCESSED_MASK;
-	/*
-	 * CMDS_DONE may have incremented between reading CMDS_PROCESSED
-	 * and clearing INT_ACTIVE.  Re-read CMDS_PROCESSED to ensure we
-	 * didn't miss a command completion.
-	 */
-	do {
-		val = mdc_chan_readl(mchan, MDC_CMDS_PROCESSED);
-		done1 = (val >> MDC_CMDS_PROCESSED_CMDS_DONE_SHIFT) &
-			MDC_CMDS_PROCESSED_CMDS_DONE_MASK;
-		val &= ~((MDC_CMDS_PROCESSED_CMDS_PROCESSED_MASK <<
-			  MDC_CMDS_PROCESSED_CMDS_PROCESSED_SHIFT) |
-			 MDC_CMDS_PROCESSED_INT_ACTIVE);
-		val |= done1 << MDC_CMDS_PROCESSED_CMDS_PROCESSED_SHIFT;
-		mdc_chan_writel(mchan, val, MDC_CMDS_PROCESSED);
-		val = mdc_chan_readl(mchan, MDC_CMDS_PROCESSED);
-		done2 = (val >> MDC_CMDS_PROCESSED_CMDS_DONE_SHIFT) &
-			MDC_CMDS_PROCESSED_CMDS_DONE_MASK;
-	} while (done1 != done2);
-
 	dev_dbg(mdma2dev(mchan->mdma), "IRQ on channel %d\n", mchan->chan_nr);
+
+	new_events = mdc_get_new_events(mchan);
+
+	if (!new_events)
+		goto out;
 
 	mdesc = mchan->desc;
 	if (!mdesc) {
@@ -740,8 +768,7 @@ static irqreturn_t mdc_chan_irq(int irq, void *dev_id)
 		goto out;
 	}
 
-	for (i = processed; i != done1;
-	     i = (i + 1) % (MDC_CMDS_PROCESSED_CMDS_PROCESSED_MASK + 1)) {
+	for (i = 0; i < new_events; i++) {
 		/*
 		 * The first interrupt in a transfer indicates that the
 		 * command list has been loaded, not that a command has
@@ -990,9 +1017,35 @@ static int mdc_dma_remove(struct platform_device *pdev)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int img_mdc_suspend(struct device *dev)
+{
+	struct mdc_dma *mdma = dev_get_drvdata(dev);
+
+	clk_disable_unprepare(mdma->clk);
+
+	return 0;
+}
+
+static int img_mdc_resume(struct device *dev)
+{
+	struct mdc_dma *mdma = dev_get_drvdata(dev);
+	int ret = 0;
+
+	ret = clk_prepare_enable(mdma->clk);
+
+	return ret;
+}
+#endif /* CONFIG_PM_SLEEP */
+
+static const struct dev_pm_ops img_mdc_pm_ops = {
+	SET_SYSTEM_SLEEP_PM_OPS(img_mdc_suspend, img_mdc_resume)
+};
+
 static struct platform_driver mdc_dma_driver = {
 	.driver = {
 		.name = "img-mdc-dma",
+		.pm	= &img_mdc_pm_ops,
 		.of_match_table = of_match_ptr(mdc_dma_of_match),
 	},
 	.probe = mdc_dma_probe,

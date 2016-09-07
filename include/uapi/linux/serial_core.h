@@ -261,4 +261,7 @@
 /* STM32 USART */
 #define PORT_STM32	113
 
+/* Pistachio SOC host port */
+#define PORT_HOSTPORT	114
+
 #endif /* _UAPILINUX_SERIAL_CORE_H */

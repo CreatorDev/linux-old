@@ -1,0 +1,104 @@
+config SND_SOC_IMG
+	bool "Audio support for Imagination Technologies designs"
+	depends on MACH_PISTACHIO
+	help
+	  Audio support for Imagination Technologies audio hardware
+
+config SND_SOC_IMG_I2S_IN
+	tristate "Imagination I2S Input Device Driver"
+	depends on SND_SOC_IMG
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	help
+	  Say Y or M if you want to add support for I2S in driver for
+	  Imagination Technologies I2S in device.
+
+config SND_SOC_IMG_I2S_OUT
+	tristate "Imagination I2S Output Device Driver"
+	depends on SND_SOC_IMG
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	help
+	  Say Y or M if you want to add support for I2S out driver for
+	  Imagination Technologies I2S out device.
+
+config SND_SOC_IMG_PARALLEL_OUT
+	tristate "Imagination Parallel Output Device Driver"
+	depends on SND_SOC_IMG
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	help
+	  Say Y or M if you want to add support for parallel out driver for
+	  Imagination Technologies parallel out device.
+
+config SND_SOC_IMG_SPDIF_IN
+	tristate "Imagination SPDIF Input Device Driver"
+	depends on SND_SOC_IMG
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	help
+	  Say Y or M if you want to add support for SPDIF input driver for
+	  Imagination Technologies SPDIF input device.
+
+config SND_SOC_IMG_SPDIF_OUT
+	tristate "Imagination SPDIF Output Device Driver"
+	depends on SND_SOC_IMG
+	select SND_SOC_GENERIC_DMAENGINE_PCM
+	help
+	  Say Y or M if you want to add support for SPDIF out driver for
+	  Imagination Technologies SPDIF out device.
+
+
+config SND_SOC_IMG_PISTACHIO_EVENT_TIMER
+	tristate "Support for Pistachio SoC Event Timer Driver"
+	depends on SND_SOC_IMG_PISTACHIO_EVENT_TIMER_ATU || SND_SOC_IMG_PISTACHIO_EVENT_TIMER_LOCAL
+	help
+	  Say Y or M if you want to add support for Pistachio event timer
+	  driver for Imagination Technologies Pistachio event timer device.
+
+choice
+	prompt "Pistachio Event Timer Time Units"
+	depends on SND_SOC_IMG
+	default SND_SOC_IMG_PISTACHIO_EVENT_TIMER_ATU if ATU
+	help
+	  Selects the time units used by the Pistachio Event Timer
+
+config SND_SOC_IMG_PISTACHIO_EVENT_TIMER_ATU
+	bool "Pistachio SoC Event Timer uses ATU units"
+	depends on ATU
+	help
+	  ATU units are used (atu time maintained by ATU driver)
+
+config SND_SOC_IMG_PISTACHIO_EVENT_TIMER_LOCAL
+	bool "Pistachio SoC Event Timer uses local units"
+	help
+	  Local units are used (nanoseconds since event timer probe)
+
+endchoice
+
+config SND_SOC_IMG_PISTACHIO_INTERNAL_DAC
+	tristate "Support for Pistachio SoC Internal DAC Driver"
+	depends on SND_SOC_IMG
+	help
+	  Say Y or M if you want to add support for Pistachio internal DAC
+	  driver for Imagination Technologies Pistachio internal DAC device.
+
+
+config SND_SOC_IMG_PISTACHIO
+	tristate "Audio support for Pistachio SoC"
+	depends on SND_SOC_IMG
+	select SND_SOC_IMG_I2S_IN
+	select SND_SOC_IMG_I2S_OUT
+	select SND_SOC_IMG_PARALLEL_OUT
+	select SND_SOC_IMG_SPDIF_IN
+	select SND_SOC_IMG_SPDIF_OUT
+	select SND_SOC_IMG_PISTACHIO_EVENT_TIMER
+	select SND_SOC_IMG_PISTACHIO_INTERNAL_DAC
+
+config SND_SOC_IMG_PISTACHIO_BUB
+	tristate "Audio support for Pistachio Bring-Up Board"
+	depends on SND_SOC_IMG
+	select SND_SOC_IMG_PISTACHIO
+	select SND_SOC_PCM3168A_I2C
+	select SND_SOC_PCM3168A_SPI
+	select SND_SOC_PCM3060_I2C
+	select SND_SOC_PCM3060_SPI
+	select SND_SOC_TPA6130A2
+	help
+	  Audio support for Imagination Technologies Pistachio Bring-Up Board

@@ -12,7 +12,7 @@ A "cpus" node is required.  Required properties:
  - #size-cells: Must be 0.
 A CPU sub-node is also required for at least CPU 0.  Since the topology may
 be probed via CPS, it is not necessary to specify secondary CPUs.  Required
-propertis:
+properties:
  - device_type: Must be "cpu".
  - compatible: Must be "mti,interaptiv".
  - reg: CPU number.
