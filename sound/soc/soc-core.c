@@ -960,6 +960,9 @@ static int soc_bind_dai_link(struct snd_soc_card *card, int num)
 			if (platform->dev->of_node !=
 			    dai_link->platform_of_node)
 				continue;
+			if(platform_name && strcmp(platform->component.name,
+			    platform_name))
+				continue;
 		} else {
 			if (strcmp(platform->component.name, platform_name))
 				continue;
@@ -2373,12 +2376,12 @@ int snd_soc_register_card(struct snd_soc_card *card)
 		 * Platform may be specified by either name or OF node, but
 		 * can be left unspecified, and a dummy platform will be used.
 		 */
-		if (link->platform_name && link->platform_of_node) {
+		/*if (link->platform_name && link->platform_of_node) {
 			dev_err(card->dev,
 				"ASoC: Both platform name/of_node are set for %s\n",
 				link->name);
 			return -EINVAL;
-		}
+		}*/
 
 		/*
 		 * CPU device may be specified by either name or OF node, but
@@ -3587,6 +3590,47 @@ static int snd_soc_get_dai_name(struct of_phandle_args *args,
 	return ret;
 }
 
+static int snd_soc_get_platform_name(struct of_phandle_args *args,
+				const char **platform_name)
+{
+	struct snd_soc_platform *platform;
+	int ret = -EPROBE_DEFER;
+	int id = -1;
+
+	mutex_lock(&client_mutex);
+	list_for_each_entry(platform, &platform_list, list) {
+		if (platform->dev->of_node != args->np)
+			continue;
+
+		switch (args->args_count) {
+		case 0:
+			*platform_name = platform->component.name;
+			ret = 0;
+			break;
+		case 1:
+			id = args->args[0];
+			if(platform->component.id == id) {
+				*platform_name = platform->component.name;
+				ret = 0;
+			}
+			break;
+		default:
+			/* not supported */
+			break;
+		}
+
+		if (!ret)
+			break;
+
+		if (id < 0) {
+			ret = -EINVAL;
+			continue;
+		}
+	}
+	mutex_unlock(&client_mutex);
+	return ret;
+}
+
 int snd_soc_of_get_dai_name(struct device_node *of_node,
 			    const char **dai_name)
 {
@@ -3605,6 +3649,44 @@ int snd_soc_of_get_dai_name(struct device_node *of_node,
 	return ret;
 }
 EXPORT_SYMBOL_GPL(snd_soc_of_get_dai_name);
+
+int snd_soc_of_get_dai_name_alt(struct device_node *of_node, char *name,
+				int index, const char **dai_name)
+{
+	struct of_phandle_args args;
+	int ret;
+
+	ret = of_parse_phandle_with_args(of_node, name, "#sound-dai-cells",
+						index, &args);
+	if (ret)
+		return ret;
+
+	ret = snd_soc_get_dai_name(&args, dai_name);
+
+	of_node_put(args.np);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(snd_soc_of_get_dai_name_alt);
+
+int snd_soc_of_get_platform_name(struct device_node *of_node, char *name,
+				int index,  const char **platform_name)
+{
+	struct of_phandle_args args;
+	int ret;
+
+	ret = of_parse_phandle_with_args(of_node, name,
+			"#sound-platform-cells", index, &args);
+	if (ret)
+		return ret;
+
+	ret = snd_soc_get_platform_name(&args, platform_name);
+
+	of_node_put(args.np);
+
+	return ret;
+}
+EXPORT_SYMBOL_GPL(snd_soc_of_get_platform_name);
 
 /*
  * snd_soc_of_get_dai_link_codecs - Parse a list of CODECs in the devicetree

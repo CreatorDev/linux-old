@@ -32,6 +32,7 @@ struct pistachio_mux {
 	unsigned int id;
 	unsigned long reg;
 	unsigned int shift;
+	unsigned int clk_flags;
 	unsigned int num_parents;
 	const char *name;
 	const char **parents;
@@ -44,16 +45,28 @@ struct pistachio_mux {
 		.id		= _id,				\
 		.reg		= _reg,				\
 		.shift		= _shift,			\
+		.clk_flags      = CLK_SET_RATE_NO_REPARENT,     \
 		.name		= _name,			\
 		.parents	= _pnames,			\
 		.num_parents	= ARRAY_SIZE(_pnames)		\
 	}
 
+#define MUX_F(_id, _name, _pnames, _reg, _shift, _clkf)		\
+	{							\
+		.id             = _id,				\
+		.reg            = _reg,				\
+		.shift          = _shift,			\
+		.name           = _name,			\
+		.parents        = _pnames,			\
+		.num_parents    = ARRAY_SIZE(_pnames),		\
+		.clk_flags      = _clkf,			\
+	}
 
 struct pistachio_div {
 	unsigned int id;
 	unsigned long reg;
 	unsigned int width;
+	unsigned int clk_flags;
 	unsigned int div_flags;
 	const char *name;
 	const char *parent;
@@ -64,17 +77,19 @@ struct pistachio_div {
 		.id		= _id,				\
 		.reg		= _reg,				\
 		.width		= _width,			\
+		.clk_flags	= 0,				\
 		.div_flags	= 0,				\
 		.name		= _name,			\
 		.parent		= _pname,			\
 	}
 
-#define DIV_F(_id, _name, _pname, _reg, _width, _div_flags)	\
+#define DIV_F(_id, _name, _pname, _reg, _width, _clkf, _divf)	\
 	{							\
 		.id		= _id,				\
 		.reg		= _reg,				\
 		.width		= _width,			\
-		.div_flags	= _div_flags,			\
+		.clk_flags	= _clkf,			\
+		.div_flags	= _divf,			\
 		.name		= _name,			\
 		.parent		= _pname,			\
 	}
@@ -94,15 +109,35 @@ struct pistachio_fixed_factor {
 		.parent		= _pname,			\
 	}
 
+/*
+ * in order to avoid u32 multiplication overflow, declare all
+ * members of this structure as u64
+ */
 struct pistachio_pll_rate_table {
 	unsigned long long fref;
 	unsigned long long fout;
+	unsigned long long fout_min;
+	unsigned long long fout_max;
 	unsigned long long refdiv;
 	unsigned long long fbdiv;
 	unsigned long long postdiv1;
 	unsigned long long postdiv2;
 	unsigned long long frac;
 };
+
+#define INT_PLL_RATES(_fref, _fout, _refdiv, _fbdiv,		\
+		      _postdiv1, _postdiv2)			\
+	{							\
+		.fref		= _fref,			\
+		.fout		= _fout,			\
+		.fout_min	= _fout,			\
+		.fout_max	= _fout,			\
+		.refdiv		= _refdiv,			\
+		.fbdiv		= _fbdiv,			\
+		.postdiv1	= _postdiv1,			\
+		.postdiv2	= _postdiv2,			\
+		.frac		= 0,				\
+	}
 
 enum pistachio_pll_type {
 	PLL_GF40LP_LAINT,

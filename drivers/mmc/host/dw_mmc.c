@@ -3217,13 +3217,16 @@ EXPORT_SYMBOL(dw_mci_remove);
 
 
 #ifdef CONFIG_PM_SLEEP
-/*
- * TODO: we should probably disable the clock to the card in the suspend path.
- */
 int dw_mci_suspend(struct dw_mci *host)
 {
 	if (host->use_dma && host->dma_ops->exit)
 		host->dma_ops->exit(host);
+
+	if (!IS_ERR(host->ciu_clk))
+		clk_disable(host->ciu_clk);
+
+	if (!IS_ERR(host->biu_clk))
+		clk_disable(host->biu_clk);
 
 	return 0;
 }
@@ -3232,6 +3235,12 @@ EXPORT_SYMBOL(dw_mci_suspend);
 int dw_mci_resume(struct dw_mci *host)
 {
 	int i, ret;
+
+	if (!IS_ERR(host->ciu_clk))
+		clk_enable(host->ciu_clk);
+
+	if (!IS_ERR(host->biu_clk))
+		clk_enable(host->biu_clk);
 
 	if (!dw_mci_ctrl_reset(host, SDMMC_CTRL_ALL_RESET_FLAGS)) {
 		ret = -ENODEV;

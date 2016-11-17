@@ -1072,6 +1072,91 @@ static int soc_pcm_bespoke_trigger(struct snd_pcm_substream *substream,
 	}
 	return 0;
 }
+
+static int soc_pcm_start_at(struct snd_pcm_substream *substream,
+	int audio_clock_type, const struct timespec *start_time)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_platform *platform = rtd->platform;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai *codec_dai;
+	int i, ret;
+
+	for (i = 0; i < rtd->num_codecs; i++) {
+		codec_dai = rtd->codec_dais[i];
+		if (codec_dai->driver->ops &&
+		    codec_dai->driver->ops->start_at) {
+			ret = codec_dai->driver->ops->start_at(substream,
+				codec_dai, audio_clock_type, start_time);
+			if (ret < 0)
+				return ret;
+		}
+	}
+
+	if (platform->driver->ops && platform->driver->ops->start_at) {
+		ret = platform->driver->ops->start_at(substream,
+					audio_clock_type, start_time);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (cpu_dai->driver->ops && cpu_dai->driver->ops->start_at) {
+		ret = cpu_dai->driver->ops->start_at(substream,
+			cpu_dai, audio_clock_type, start_time);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (rtd->dai_link->ops && rtd->dai_link->ops->start_at) {
+		ret = rtd->dai_link->ops->start_at(substream,
+			audio_clock_type, start_time);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
+static int soc_pcm_start_at_abort(struct snd_pcm_substream *substream)
+{
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_platform *platform = rtd->platform;
+	struct snd_soc_dai *cpu_dai = rtd->cpu_dai;
+	struct snd_soc_dai *codec_dai;
+	int i, ret;
+
+	for (i = 0; i < rtd->num_codecs; i++) {
+		codec_dai = rtd->codec_dais[i];
+		if (codec_dai->driver->ops &&
+		    codec_dai->driver->ops->start_at_abort) {
+			ret = codec_dai->driver->ops->start_at_abort(
+				substream, codec_dai);
+			if (ret < 0)
+				return ret;
+		}
+	}
+
+	if (platform->driver->ops && platform->driver->ops->start_at_abort) {
+		ret = platform->driver->ops->start_at_abort(substream);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (cpu_dai->driver->ops && cpu_dai->driver->ops->start_at_abort) {
+		ret = cpu_dai->driver->ops->start_at_abort(substream, cpu_dai);
+		if (ret < 0)
+			return ret;
+	}
+
+	if (rtd->dai_link->ops && rtd->dai_link->ops->start_at_abort) {
+		ret = rtd->dai_link->ops->start_at_abort(substream);
+		if (ret < 0)
+			return ret;
+	}
+
+	return 0;
+}
+
 /*
  * soc level wrapper for pointer callback
  * If cpu_dai, codec_dai, platform driver has the delay callback, than
@@ -2617,6 +2702,8 @@ int soc_new_pcm(struct snd_soc_pcm_runtime *rtd, int num)
 		rtd->ops.close		= dpcm_fe_dai_close;
 		rtd->ops.pointer	= soc_pcm_pointer;
 		rtd->ops.ioctl		= soc_pcm_ioctl;
+		rtd->ops.start_at	= soc_pcm_start_at;
+		rtd->ops.start_at_abort	= soc_pcm_start_at_abort;
 	} else {
 		rtd->ops.open		= soc_pcm_open;
 		rtd->ops.hw_params	= soc_pcm_hw_params;
@@ -2626,6 +2713,8 @@ int soc_new_pcm(struct snd_soc_pcm_runtime *rtd, int num)
 		rtd->ops.close		= soc_pcm_close;
 		rtd->ops.pointer	= soc_pcm_pointer;
 		rtd->ops.ioctl		= soc_pcm_ioctl;
+		rtd->ops.start_at	= soc_pcm_start_at;
+		rtd->ops.start_at_abort	= soc_pcm_start_at_abort;
 	}
 
 	if (platform->driver->ops) {
