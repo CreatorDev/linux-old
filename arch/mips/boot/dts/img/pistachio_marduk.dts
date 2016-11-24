@@ -90,6 +90,17 @@
 		reg = <0>;
 		spi-max-frequency = <50000000>;
 	};
+	flash@1 {
+		compatible = "gigadevice,gd5f";
+		reg = <1>;
+		spi-max-frequency = <50000000>;
+		nand-on-flash-bbt;
+		spi-rx-bus-width = <2>;
+		spi-tx-bus-width = <4>;
+		#address-cells = <1>;
+		#size-cells = <1>;
+		linux,mtd-name = "spi-nand";
+	};
 };
 
 &uart0 {
