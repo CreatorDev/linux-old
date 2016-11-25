@@ -71,6 +71,39 @@
 			gpios = <&gpio2 14 GPIO_ACTIVE_LOW>;
 		};
 	};
+
+	pistachio_audio_card {
+		compatible = "img,pistachio-audio";
+
+		clocks = <&clk_core CLK_AUDIO_PLL>,
+			<&clk_core CLK_I2S>,
+			<&clk_core CLK_AUDIO>;
+		clock-names = "audio_pll", "i2s_mclk", "dac_clk";
+
+		img,cr-periph = <&cr_periph>;
+		img,event-timer = <&event_timer>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2s_mclk_pin>;
+
+		spdif-out {
+			cpu-dai = <&spdif_out>;
+		};
+
+		spdif-in {
+			cpu-dai = <&spdif_in>;
+		};
+
+		parallel-out {
+			cpu-dai = <&parallel_out>;
+			sound-dai = <&internal_dac>;
+		};
+
+		i2s-out {
+			cpu-dai = <&i2s_out>;
+			format = "i2s";
+		};
+	};
 };
 
 &internal_dac {
@@ -170,4 +203,47 @@
 &i2c3 {
 	status = "okay";
 	clock-frequency = <400000>;
+};
+
+&i2s_out {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2s_out_pins>;
+};
+
+&i2s_in {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2s_in_pins>;
+};
+
+&i2s_out_pins {
+	i2s-out-clk {
+		pins = "mfio37", "mfio38";
+		function = "i2s_out";
+	};
+	i2s-out {
+		pins = "mfio39", "mfio40", "mfio41";
+		function = "i2s_out";
+	};
+};
+
+&i2s_in_pins {
+	i2s-in {
+		pins = "mfio47", "mfio48", "mfio49",
+			"mfio50", "mfio51";
+		function = "i2s_in";
+	};
+};
+
+&spdif_out {
+	status = "okay";
+};
+
+&spdif_in {
+	status = "okay";
+};
+
+&parallel_out {
+	status = "okay";
 };
