@@ -149,6 +149,12 @@
 	status = "okay";
 };
 
+&usb_phy {
+	pinctrl-names = "default";
+	pinctrl-0 = <&usb_pwr_on_pins>;
+	enable-vbus-drive;
+};
+
 &enet {
 	status = "okay";
 };

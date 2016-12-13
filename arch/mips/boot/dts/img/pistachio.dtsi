@@ -764,6 +764,14 @@
 				drive-strength = <2>;
 			};
 		};
+
+		usb_pwr_on_pins: usb-pwr-on-pins {
+			usb-pwr-on {
+				pins = "mfio86";
+				function = "rpu_l_pll_lock";
+			};
+		};
+
 	};
 
 	timer: timer@18102000 {
