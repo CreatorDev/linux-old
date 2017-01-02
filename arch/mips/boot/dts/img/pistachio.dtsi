@@ -21,6 +21,22 @@
 
 	interrupt-parent = <&gic>;
 
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		ranges;
+
+		linux,cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x400000>;
+			alignment = <0x1000>;
+			alloc-ranges = <0x00000000 0x4000000>;
+			linux,cma-default;
+		};
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -42,6 +58,117 @@
 				416000 800000
 			>;
 		};
+	};
+
+	uccpsystem: uccp-system@0 {
+		compatible = "img,pistachio-uccp-system";
+		status = "disabled";
+		/*
+		 * RPU-only clock signals:
+		 * CLK_RPU_CORE, CLK_RPU_CORE_DIV
+		 * BT-only:
+		 * CLK_BT, CLK_BT_DIV4, CLK_BT_DIV8
+		 * WIFI-only:
+		 * the rest
+		 */
+		clocks-number = <13>;
+		clocks = <&clk_core CLK_RPU_CORE>,
+			<&clk_core CLK_BT>,
+			<&clk_core CLK_BT_DIV4>,
+			<&clk_core CLK_BT_DIV8>,
+			<&clk_core CLK_RPU_V>,
+			<&clk_core CLK_RPU_L>,
+			<&clk_core CLK_RPU_SLEEP>,
+			<&clk_core CLK_WIFI_ADC>,
+			<&clk_core CLK_WIFI_DAC>,
+			<&clk_core CLK_EVENT_TIMER>,
+			<&cr_periph SYS_CLK_EVENT_TIMER>,
+			<&clk_core CLK_AUX_ADC>,
+			<&clk_core CLK_AUX_ADC_INTERNAL>;
+		clock-names = "rpu_core",
+			"bt",
+			"bt_div4",
+			"bt_div8",
+			"rpu_v",
+			"rpu_l",
+			"rpu_sleep",
+			"wifi_adc",
+			"wifi_dac",
+			"event_timer",
+			"sys_event_timer",
+			"aux_adc",
+			"aux_adc_internal";
+		assigned-clocks = <&clk_core CLK_BT_PLL_MUX>,
+			<&clk_core CLK_RPU_L_MUX>,
+			<&clk_core CLK_RPU_L_PLL_MUX>,
+			<&clk_core CLK_RPU_V_PLL_MUX>,
+			<&clk_core CLK_WIFI_PLL_MUX>,
+			<&clk_core CLK_WIFI_DIV4_MUX>,
+			<&clk_core CLK_WIFI_DIV8_MUX>,
+			<&clk_core CLK_RPU_SLEEP_DIV>,
+			<&clk_core CLK_BT_DIV>,
+			<&clk_core CLK_BT_DIV4_DIV>,
+			<&clk_core CLK_BT_DIV8_DIV>,
+			<&clk_core CLK_BT_PLL>,
+			<&clk_core CLK_RPU_L_DIV>,
+			<&clk_core CLK_RPU_V_DIV>,
+			<&clk_core CLK_WIFI_PLL>,
+			<&clk_core CLK_RPU_CORE_DIV>;
+		assigned-clock-parents = <&clk_core CLK_BT_PLL>,
+			<&clk_core CLK_RPU_L_PLL_MUX>,
+			<&clk_core CLK_RPU_L_PLL>,
+			<&clk_core CLK_RPU_V_PLL>,
+			<&clk_core CLK_WIFI_PLL>,
+			<&clk_core CLK_WIFI_DIV4>,
+			<&clk_core CLK_WIFI_DIV8>;
+		assigned-clock-rates = <0>,
+			<0>,
+			<0>,
+			<0>,
+			<0>,
+			<0>,
+			<0>,
+			<52000>,
+			<104000000>,
+			<26000000>,
+			<13000000>,
+			<0>,
+			<559000000>,
+			<598000000>,
+			<320000000>,
+			<320000000>;
+		reg = <0x18480000 0x40000>, <0x1a000000 0x00066cc0>;
+		reg-names = "UCCP system bus", "UCCP packed GRAM";
+	};
+
+	uccphostport: uccp-hostport@0 {
+		compatible = "img,pistachio-uccp-hostport";
+		/* Hostport block Meta IRQ enable */
+		reg = <0x18480400 4>,
+			<0x18480430 0x10>,
+			<0x18480444 4>;
+		reg-names = "Hostport mtx_irq enable",
+			"Hostport control block",
+			"Hostport mtx_int enable";
+		status = "disabled";
+		interrupts = <GIC_SHARED 67 IRQ_TYPE_LEVEL_HIGH>;
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+
+	uccpbthp: uccp-bt-hostport@0 {
+		compatible = "img,pistachio-uccp-bt";
+		reg = <0x1A000000 0x1000>;
+		status = "disabled";
+
+		#address-cells = <1>;
+		#size-cells = <1>;
+	};
+
+	uccpdummyhp: uccp-dummy-hostport@0 {
+		compatible = "img,pistachio-uccp-dummy";
+		status = "disabled";
 	};
 
 	i2c0: i2c@18100000 {
@@ -960,5 +1087,64 @@
 		#clock-cells = <0>;
 		clock-frequency = <52000000>;
 		clock-output-names = "xtal";
+	};
+
+       wifi: uccp@18480000 {
+		status = "disabled";
+		compatible = "img,pistachio-uccp";
+		reg = <0x18480000 0x9000>, <0x184C0000 0x80000>,
+		      <0x1a000000 0x00066CC0>;
+		reg-names = "uccp_sysbus_base", "uccp_perip_base",
+			    "uccp_pkd_gram_base";
+		interrupts = <GIC_SHARED 67 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "uccpirq";
+		clocks = <&clk_core CLK_RPU_CORE>,
+			<&clk_core CLK_RPU_V>,
+			<&clk_core CLK_RPU_L>,
+			<&clk_core CLK_RPU_SLEEP>,
+			<&clk_core CLK_WIFI_ADC>,
+			<&clk_core CLK_WIFI_DAC>,
+			<&clk_core CLK_EVENT_TIMER>,
+			<&cr_periph SYS_CLK_EVENT_TIMER>,
+			<&clk_core CLK_AUX_ADC>,
+			<&clk_core CLK_AUX_ADC_INTERNAL>;
+		clock-names = "rpu_core", "rpu_v", "rpu_l", "rpu_sleep",
+				"wifi_adc", "wifi_dac", "event_timer",
+				"sys_event_timer", "aux_adc",
+				"aux_adc_internal";
+		assigned-clocks = <&clk_core CLK_RPU_L_DIV>,
+			<&clk_core CLK_RPU_L_MUX>,
+			<&clk_core CLK_RPU_L_PLL_MUX>,
+			<&clk_core CLK_RPU_V_DIV>,
+			<&clk_core CLK_RPU_V_PLL_MUX>,
+			<&clk_core CLK_WIFI_PLL_MUX>,
+			<&clk_core CLK_WIFI_DIV4_MUX>,
+			<&clk_core CLK_WIFI_DIV8_MUX>,
+			<&clk_core CLK_RPU_SLEEP_DIV>,
+			<&clk_core CLK_WIFI_PLL>,
+			<&clk_core CLK_RPU_CORE_DIV>;
+		assigned-clock-parents = <0>,
+			<&clk_core CLK_RPU_L_PLL_MUX>,
+			<&clk_core CLK_RPU_L_PLL>,
+			<0>,
+			<&clk_core CLK_RPU_V_PLL>,
+			<&clk_core CLK_WIFI_PLL>,
+			<&clk_core CLK_WIFI_DIV4>,
+			<&clk_core CLK_WIFI_DIV8>,
+			<0>,
+			<0>,
+			<0>;
+		assigned-clock-rates = <559000000>,
+			<0>,
+			<0>,
+			<598000000>,
+			<0>,
+			<0>,
+			<0>,
+			<0>,
+			<52000>,
+			<320000000>,
+			<320000000>;
+		io-channels = <&adc 4>;
 	};
 };
